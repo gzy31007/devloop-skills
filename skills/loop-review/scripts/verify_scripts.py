@@ -5,7 +5,7 @@ Every case builds its own tree under a temporary directory and removes it
 afterwards. Covered: Python gate (lines, complexity, cycles, clean pass),
 TS/JS gate (lines, complexity, pseudo-branches in comments and strings, cycles,
 clean pass), a mixed `.loop/config.json`, the cross-platform reaper (timeout,
-environment stripping, serialized lock, `--status`) and the six SKILL.md
+environment stripping, serialized lock, `--status`) and the seven SKILL.md
 frontmatter plus banned-phrase scan. Standard library only.
 """
 
@@ -197,7 +197,7 @@ def check_reaper(work):
 
 
 def check_skills():
-    expected = {"hakimi", "loop-init", "loop-plan", "loop-build", "loop-review", "loop-retro"}
+    expected = {"agent-docs", "hakimi", "loop-init", "loop-plan", "loop-build", "loop-review", "loop-retro"}
     found = {path.parent.name for path in SKILLS.glob("*/SKILL.md")}
     assert found == expected, (sorted(found), sorted(expected))
     for name in sorted(expected):
@@ -215,7 +215,7 @@ def check_skills():
     decisions = (SKILLS / "loop-review" / "references" / "decisions.template.md").read_text(encoding="utf-8")
     assert "可推翻" in decisions and "superseded" in decisions, "decisions template header"
     assert "可推翻" in decisions.split("---")[0] or decisions.index("可推翻") < 600, "header must come first"
-    return f"skills: 6 frontmatter names, {len(documents)} md files free of banned phrasing"
+    return f"skills: {len(expected)} frontmatter names, {len(documents)} md files free of banned phrasing"
 
 
 def main():

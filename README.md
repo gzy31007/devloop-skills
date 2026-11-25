@@ -14,6 +14,7 @@ npx skills add gzy31007/devloop-skills
 
 ## 包含技能
 
+- `agent-docs`：面向 Coding Agent 的文档与注释写作规范（短段落、表格优先、真实代码、现在时态、零 emoji、源码事实核验）
 - `hakimi`：总路由与项目现状侦察，只指路并给出下一步斜杠命令
 - `loop-init`：项目首次接入（自动识别 Python / TS / JS 技术栈，支持自研与客串双模式）
 - `loop-plan`：边界设计、原型比选与可推翻的 `DECISIONS.md`
