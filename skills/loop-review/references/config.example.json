@@ -3,6 +3,7 @@
   "max_complexity": 12,
   "check_cycles": true,
   "languages": "auto",
-  "ignore_dirs": [".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".hypothesis", ".tmp", "dist", "build", ".loop"],
-  "allow_empty": false
+  "ignore_dirs": [".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".hypothesis", ".tmp", "dist", "build", ".loop", ".opencode", ".agents", ".claude", ".codex"],
+  "allow_empty": false,
+  "generated_paths": []
 }

@@ -1,53 +1,40 @@
 ---
 name: loop-init
-description: 为当前仓库接入 devloop 循环：识别技术栈、写入 .loop/config.json，按自研模式或客串模式落地追踪与本地影子配置。首次接入、换仓库、技术栈变化时使用。
+description: 为当前仓库幂等接入 devloop 闭环：执行只读预检、写入 .loop/config.json、维护 AGENTS.md 索引块与模板文件，支持自研与客串双模式。首次接入、重复刷新或技术栈变化时使用。
 ---
 
-# loop-init · 接入循环
+# loop-init · 幂等接入闭环
 
-## 一、识别技术栈
+负责仓库初始化与配置基线验证。脚本路径优先从已加载的 `loop-review` 技能目录拼接 `scripts/<脚本名>`，CI 与测试夹具优先读取 `DEVLOOP_KIT`。
 
-看仓库根的文件与目录，给出结论：
+## 接入模式与文档落点
 
-| 证据 | 栈 |
-| --- | --- |
-| `pyproject.toml` / `setup.py` / `*.py` | python |
-| `tsconfig.json` / `*.ts` / `*.tsx` | ts |
-| `package.json` / `*.js` / `*.jsx` | js |
-| 以上多类同时出现 | 混合，写全列表 |
+| 分支 | 条件 | 文档路径 | `AGENTS.md` 处理 | Git 排除 |
+| --- | --- | --- | --- | --- |
+| O1 自研 | `mode=own` | 根目录 `DECISIONS.md`、`FEATURE_MAP.md` | 创建或原地更新标记块，保留块外字节 | 无改动 |
+| E1 客串（未跟踪） | `mode=external` 且 `AGENTS.md` 未受 Git 跟踪 | `.loop/DECISIONS.md`、`.loop/FEATURE_MAP.md` | 创建或原地更新标记块，指向 `.loop/` | 写根锚定规则至 `info/exclude` 并以 `git check-ignore` 复验 |
+| E2 客串（已跟踪） | `mode=external` 且 `AGENTS.md` 已受上游跟踪 | `.loop/DECISIONS.md`、`.loop/FEATURE_MAP.md` | 保持只读零改动，`.loop/handoff.md` 标为 `handoff-fallback` | 写 `/.loop/` 至 `info/exclude` 并以 `git check-ignore` 复验 |
 
-`languages` 写 `"auto"` 让门禁自己识别，或写明确列表，例如 `["python", "ts"]`。
+## 执行步骤
 
-## 二、选接入模式
-
-### 自研模式（Own Repo）
-
-`.loop/config.json` 提交进仓库跟踪，作为项目约定的一部分。缺省时一并创建 `FEATURE_MAP.md` 与 `DECISIONS.md`（用 `references/` 的模板）。队友克隆后直接拿到同一份配置。
-
-### 客串模式（External Repo）
-
-上游仓库自带 Lint / CI，全部沿用。本地这样落地：
-
-1. `.loop/` 写进 `.git/info/exclude`，上游 `.gitignore` 与工作树零改动；
-2. 在 `~/.devloop/projects/<repo-id>/config.json` 维护本地影子配置，`<repo-id>` 取仓库目录名的小写连字符形式；
-3. 门禁优先读仓库内 `.loop/config.json`，缺省时回退影子配置。
+运行初始化脚本前自动完成全部只读预检（Git 根、排除文件路径、符号链接、跟踪状态、现有 JSON 与标记块成对合法性），任一异常直接返回退出码 `2` 且零写盘。
 
 ```bash
-printf '.loop/\n' >> .git/info/exclude
-mkdir -p ~/.devloop/projects/<repo-id>
-cp .loop/config.json ~/.devloop/projects/<repo-id>/config.json
+# 自研模式
+python <loop-review-dir>/scripts/devloop_ops.py init --cwd . --mode own --json
+
+# 客串模式（须在 Git 仓库内执行；影子配置按规范化仓库路径哈希隔离）
+python <loop-review-dir>/scripts/devloop_ops.py init --cwd . --mode external --json
 ```
 
-## 三、落盘配置
+重复运行保持幂等：默认保留已有 `mode`、全部自定义配置键、`DECISIONS.md` 与 `FEATURE_MAP.md` 既有内容以及 `.loop/handoff.md` 打回记录；显式切换模式传入 `--switch-mode`，迁移旧目录名影子配置传入 `--migrate-shadow`。
 
-以 `references/config.example.json` 为底，按仓库规模调 `max_lines`、`max_complexity`、`ignore_dirs`。写完后跑一次门禁确认基线：
+## 基线门禁与交接
+
+初始化完成后运行架构门禁验证基线，按需在 `.loop/config.json` 填写 `generated_paths` 与阈值：
 
 ```bash
-python .loop/../skills/loop-review/scripts/arch_gate.py --json .
+python <loop-review-dir>/scripts/arch_gate.py --json .
 ```
 
-门禁报红就先修到绿，再进入 `/loop-plan`。
-
-## 四、交接
-
-把栈、模式、配置文件位置、门禁基线结果写进 `.loop/handoff.md`，下一步 `/loop-plan`。
+确认门禁返回 `PASSED` 且 `.loop/handoff.md` 记录当前模式与基线结果后，进入 `/loop-plan`。
