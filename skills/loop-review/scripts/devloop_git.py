@@ -14,8 +14,9 @@ GLOB_CHARS = frozenset("*?[")
 KIT_SKILLS = ("agent-docs", "hakimi", "loop-init", "loop-plan", "loop-build", "loop-review", "loop-retro")
 KIT_SCRIPTS = (
     "arch_gate.py", "arch_js.py", "reap_and_run.py", "devloop_git.py", "devloop_markers.py",
-    "devloop_docs.py", "devloop_init.py", "devloop_gate.py", "devloop_ops.py",
-    "verify_scripts.py", "verify_ops_cases.py", "verify_gate_cases.py",
+    "devloop_docs.py", "devloop_init.py", "devloop_review_io.py", "devloop_review_store.py",
+    "devloop_reviews.py", "devloop_archive.py", "devloop_gate.py", "devloop_ops.py",
+    "verify_scripts.py", "verify_ops_cases.py", "verify_review_cases.py", "verify_gate_cases.py",
 )
 KIT_REFERENCES = (
     "config.example.json", "decisions.template.md", "feature_map.template.md",
@@ -84,6 +85,37 @@ def is_ignored(git_root: pathlib.Path, repo_rel: str, is_dir: bool = False) -> b
 
 def sha256_file(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def current_branch(cwd: pathlib.Path) -> str:
+    proc = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
+    if proc is None or proc.returncode != 0:
+        return ""
+    name = proc.stdout.strip()
+    return "" if not name or name == "HEAD" else name
+
+
+def head_sha(cwd: pathlib.Path) -> str:
+    proc = run_git(["rev-parse", "HEAD"], cwd)
+    return proc.stdout.strip() if proc and proc.returncode == 0 else ""
+
+
+def resolve_commit_sha(cwd: pathlib.Path, ref: str) -> str:
+    proc = run_git(["rev-parse", "--verify", f"{ref}^{{commit}}"], cwd)
+    return proc.stdout.strip() if proc and proc.returncode == 0 else ""
+
+
+def is_worktree_clean(git_root: pathlib.Path) -> tuple[bool | None, str]:
+    proc = run_git(["status", "--porcelain"], git_root)
+    if proc is None or proc.returncode != 0:
+        return None, ""
+    text = proc.stdout.strip()
+    return (False, text.splitlines()[0]) if text else (True, "")
+
+
+def repo_prefix(cwd: pathlib.Path, git_root: pathlib.Path) -> str:
+    rel = cwd.resolve().relative_to(git_root.resolve()).as_posix()
+    return "" if rel in ("", ".") else f"{rel}/"
 
 
 def _repo_slug(repo_root: pathlib.Path) -> str:

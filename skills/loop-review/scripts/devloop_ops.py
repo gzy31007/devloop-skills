@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified CLI for devloop kit discovery, idempotent init, review stamping, and release gates."""
+"""Unified CLI for devloop kit discovery, idempotent init, review records, and release gates."""
 
 from __future__ import annotations
 
@@ -13,10 +13,12 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from devloop_docs import docs_fingerprint, write_review_stamp
+from devloop_archive import run_review_archive, run_review_status
+from devloop_docs import docs_fingerprint
 from devloop_gate import run_release_gate
 from devloop_git import configure_stdio, is_valid_kit
 from devloop_init import run_init
+from devloop_reviews import run_review_record
 
 LOCAL_SKILL_DIRS = (".opencode/skills", ".agents/skills", ".claude/skills", "skills", "kits/devloop/skills")
 GLOBAL_SKILL_DIRS = (
@@ -93,21 +95,33 @@ def _cmd_docs_fingerprint(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
-def _cmd_review_stamp(args: argparse.Namespace) -> int:
-    docs_root = pathlib.Path(args.docs_root) if args.docs_root else None
-    out_path = pathlib.Path(args.out) if args.out else None
-    code, payload = write_review_stamp(
-        pathlib.Path(args.cwd),
-        mode=args.mode,
-        reviewed_sha=args.reviewed_sha,
-        docs_root=docs_root,
-        dec_status=args.decisions_status,
-        dec_summary=args.decisions_summary,
-        feat_status=args.feature_map_status,
-        feat_summary=args.feature_map_summary,
-        base_dec_sha=args.baseline_decisions_sha,
-        base_feat_sha=args.baseline_feature_map_sha,
-        out_path=out_path,
+def _cmd_review_record(args: argparse.Namespace) -> int:
+    code, payload = run_review_record(
+        pathlib.Path(args.cwd), verdict=args.verdict, category=args.category,
+        state_root=args.state_root, docs_root=args.docs_root, mode=args.mode,
+        version=args.version, branch=args.branch, reviewed_sha=args.reviewed_sha,
+        reviewer=args.reviewer, summary=args.summary, body_file=args.body_file,
+        body_text=args.body, dec_status=args.decisions_status, dec_summary=args.decisions_summary,
+        feat_status=args.feature_map_status, feat_summary=args.feature_map_summary,
+        base_dec_sha=args.baseline_decisions_sha, base_feat_sha=args.baseline_feature_map_sha,
+    )
+    _emit(payload, args.json)
+    return code
+
+
+def _cmd_review_status(args: argparse.Namespace) -> int:
+    code, payload = run_review_status(
+        pathlib.Path(args.cwd), state_root=args.state_root, docs_root=args.docs_root,
+        mode=args.mode, version=args.version, branch=args.branch,
+    )
+    _emit(payload, args.json)
+    return code
+
+
+def _cmd_review_archive(args: argparse.Namespace) -> int:
+    code, payload = run_review_archive(
+        pathlib.Path(args.cwd), state_root_arg=args.state_root,
+        tag=args.tag, version=args.version, branch=args.branch,
     )
     _emit(payload, args.json)
     return code
@@ -115,18 +129,57 @@ def _cmd_review_stamp(args: argparse.Namespace) -> int:
 
 def _cmd_release_gate(args: argparse.Namespace) -> int:
     code, payload = run_release_gate(
-        pathlib.Path(args.cwd),
-        phase=args.phase,
-        mode=args.mode,
-        tag=args.tag,
-        reviewed_sha=args.reviewed_sha,
-        stamp=args.stamp,
-        ports=args.ports,
-        allow_diff=args.allow_diff,
-        branch=args.branch,
+        pathlib.Path(args.cwd), phase=args.phase, mode=args.mode,
+        tag=args.tag, version=args.version, branch=args.branch,
+        reviewed_sha=args.reviewed_sha, state_root=args.state_root,
+        docs_root=args.docs_root, ports=args.ports, allow_diff=args.allow_diff,
     )
     _emit(payload, args.json)
     return code
+
+
+def _add_review_parsers(sub) -> None:
+    p_rec = sub.add_parser("review-record", help="Append immutable review verdict record under .loop/reviews/.")
+    p_rec.add_argument("--cwd", default=".")
+    p_rec.add_argument("--state-root", default="")
+    p_rec.add_argument("--docs-root", default="")
+    p_rec.add_argument("--mode", default="", choices=["", "own", "external"])
+    p_rec.add_argument("--verdict", required=True, choices=["reject", "pending", "pass"])
+    p_rec.add_argument("--category", default="", choices=["", "method", "env"])
+    p_rec.add_argument("--version", default="")
+    p_rec.add_argument("--branch", default="")
+    p_rec.add_argument("--reviewed-sha", default="")
+    p_rec.add_argument("--reviewer", default="loop-review")
+    p_rec.add_argument("--summary", default="")
+    p_rec.add_argument("--body-file", default="")
+    p_rec.add_argument("--body", default="")
+    p_rec.add_argument("--decisions-status", default="")
+    p_rec.add_argument("--decisions-summary", default="")
+    p_rec.add_argument("--feature-map-status", default="")
+    p_rec.add_argument("--feature-map-summary", default="")
+    p_rec.add_argument("--baseline-decisions-sha", default="")
+    p_rec.add_argument("--baseline-feature-map-sha", default="")
+    p_rec.add_argument("--json", action="store_true")
+    p_rec.set_defaults(handler=_cmd_review_record)
+
+    p_st = sub.add_parser("review-status", help="Read active review state and routing advice.")
+    p_st.add_argument("--cwd", default=".")
+    p_st.add_argument("--state-root", default="")
+    p_st.add_argument("--docs-root", default="")
+    p_st.add_argument("--mode", default="", choices=["", "own", "external"])
+    p_st.add_argument("--version", default="")
+    p_st.add_argument("--branch", default="")
+    p_st.add_argument("--json", action="store_true")
+    p_st.set_defaults(handler=_cmd_review_status)
+
+    p_ar = sub.add_parser("review-archive", help="Move completed review scope into .loop/archive/.")
+    p_ar.add_argument("--cwd", default=".")
+    p_ar.add_argument("--state-root", default="")
+    p_ar.add_argument("--tag", default="")
+    p_ar.add_argument("--version", default="")
+    p_ar.add_argument("--branch", default="")
+    p_ar.add_argument("--json", action="store_true")
+    p_ar.set_defaults(handler=_cmd_review_archive)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -154,31 +207,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_fp.add_argument("--json", action="store_true")
     p_fp.set_defaults(handler=_cmd_docs_fingerprint)
 
-    p_st = sub.add_parser("review-stamp", help="Generate review attestation bound to candidate SHA and doc SHA-256.")
-    p_st.add_argument("--cwd", default=".")
-    p_st.add_argument("--mode", default="", choices=["", "own", "external"])
-    p_st.add_argument("--reviewed-sha", default="")
-    p_st.add_argument("--docs-root", default="")
-    p_st.add_argument("--decisions-status", default="")
-    p_st.add_argument("--decisions-summary", default="")
-    p_st.add_argument("--feature-map-status", default="")
-    p_st.add_argument("--feature-map-summary", default="")
-    p_st.add_argument("--baseline-decisions-sha", default="")
-    p_st.add_argument("--baseline-feature-map-sha", default="")
-    p_st.add_argument("--out", default="")
-    p_st.add_argument("--json", action="store_true")
-    p_st.set_defaults(handler=_cmd_review_stamp)
+    _add_review_parsers(sub)
 
     p_gate = sub.add_parser("release-gate", help="Run pre-merge or post-tag mechanical release gate.")
     p_gate.add_argument("--cwd", default=".")
     p_gate.add_argument("--phase", required=True, choices=["pre-merge", "post-tag"])
     p_gate.add_argument("--mode", default="", choices=["", "own", "external"])
     p_gate.add_argument("--tag", default="")
+    p_gate.add_argument("--version", default="")
+    p_gate.add_argument("--branch", default="")
     p_gate.add_argument("--reviewed-sha", default="")
-    p_gate.add_argument("--stamp", default="")
+    p_gate.add_argument("--state-root", default="")
+    p_gate.add_argument("--docs-root", default="")
     p_gate.add_argument("--ports", default="")
     p_gate.add_argument("--allow-diff", action="append", default=[])
-    p_gate.add_argument("--branch", default="")
     p_gate.add_argument("--json", action="store_true")
     p_gate.set_defaults(handler=_cmd_release_gate)
     return parser

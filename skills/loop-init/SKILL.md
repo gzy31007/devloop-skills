@@ -11,9 +11,9 @@ description: 为当前仓库幂等接入 devloop 闭环：执行只读预检、�
 
 | 分支 | 条件 | 文档路径 | `AGENTS.md` 处理 | Git 排除 |
 | --- | --- | --- | --- | --- |
-| O1 自研 | `mode=own` | 根目录 `DECISIONS.md`、`FEATURE_MAP.md` | 创建或原地更新标记块，保留块外字节 | 无改动 |
-| E1 客串（未跟踪） | `mode=external` 且 `AGENTS.md` 未受 Git 跟踪 | `.loop/DECISIONS.md`、`.loop/FEATURE_MAP.md` | 创建或原地更新标记块，指向 `.loop/` | 写根锚定规则至 `info/exclude` 并以 `git check-ignore` 复验 |
-| E2 客串（已跟踪） | `mode=external` 且 `AGENTS.md` 已受上游跟踪 | `.loop/DECISIONS.md`、`.loop/FEATURE_MAP.md` | 保持只读零改动，`.loop/handoff.md` 标为 `handoff-fallback` | 写 `/.loop/` 至 `info/exclude` 并以 `git check-ignore` 复验 |
+| O1 自研 | `mode=own` | 根目录 `DECISIONS.md`、`FEATURE_MAP.md` | 创建或原地更新标记块，保留块外字节 | 写 `/{prefix}.loop/reviews/` 与 `/{prefix}.loop/archive/` 至 `info/exclude` 并以 `git check-ignore` 复验（非 Git 目录跳过） |
+| E1 客串（未跟踪） | `mode=external` 且 `AGENTS.md` 未受 Git 跟踪 | `.loop/DECISIONS.md`、`.loop/FEATURE_MAP.md` | 创建或原地更新标记块，指向 `.loop/` | 写 `/{prefix}.loop/` 与 `/{prefix}AGENTS.md` 至 `info/exclude` 并以 `git check-ignore` 复验 |
+| E2 客串（已跟踪） | `mode=external` 且 `AGENTS.md` 已受上游跟踪 | `.loop/DECISIONS.md`、`.loop/FEATURE_MAP.md` | 保持只读零改动，`.loop/handoff.md` 标为 `handoff-fallback` | 写 `/{prefix}.loop/` 至 `info/exclude` 并以 `git check-ignore` 复验 |
 
 ## 执行步骤
 
@@ -27,7 +27,7 @@ python <loop-review-dir>/scripts/devloop_ops.py init --cwd . --mode own --json
 python <loop-review-dir>/scripts/devloop_ops.py init --cwd . --mode external --json
 ```
 
-重复运行保持幂等：默认保留已有 `mode`、全部自定义配置键、`DECISIONS.md` 与 `FEATURE_MAP.md` 既有内容以及 `.loop/handoff.md` 打回记录；显式切换模式传入 `--switch-mode`，迁移旧目录名影子配置传入 `--migrate-shadow`。
+重复运行保持幂等：默认保留已有 `mode`、全部自定义配置键以及 `DECISIONS.md`、`FEATURE_MAP.md` 与 `.loop/handoff.md` 既有内容；显式切换模式传入 `--switch-mode`，迁移旧目录名影子配置传入 `--migrate-shadow`。
 
 ## 基线门禁与交接
 

@@ -7,14 +7,13 @@ import json
 import pathlib
 import re
 
-from devloop_docs import resolve_mode, verify_stamp_and_docs
+from devloop_docs import resolve_mode
 from devloop_git import is_tracked, resolve_git_root, run_git
+from devloop_review_store import version_matches_tag
+from devloop_reviews import verify_review_pass_for_gate
 from reap_and_run import DEFAULT_PORTS_SPEC, probe_ports
 
-DEFAULT_ALLOW_DIFF = frozenset({
-    "DECISIONS.md", "FEATURE_MAP.md", ".loop/handoff.md",
-    ".loop/review-stamp.json", "package.json", "pyproject.toml",
-})
+DEFAULT_ALLOW_DIFF = frozenset({".loop/handoff.md"})
 
 
 def _resolve_ports(cwd: pathlib.Path, cli_ports: str) -> str:
@@ -32,25 +31,6 @@ def _resolve_ports(cwd: pathlib.Path, cli_ports: str) -> str:
     return DEFAULT_PORTS_SPEC
 
 
-def _version_matches_tag(version: str, tag: str) -> bool:
-    v_norm = version.strip().lstrip("v")
-    t_norm = tag.strip().lstrip("v")
-    if v_norm == t_norm:
-        return True
-    v_core, v_pre = (v_norm.split("-", 1) + [""])[:2]
-    t_core, t_pre = (t_norm.split("-", 1) + [""])[:2]
-    if v_pre != t_pre:
-        return False
-    v_tokens, t_tokens = v_core.split("."), t_core.split(".")
-    if not all(x.isdigit() for x in v_tokens) or not all(x.isdigit() for x in t_tokens):
-        return False
-    v_parts, t_parts = [int(x) for x in v_tokens], [int(x) for x in t_tokens]
-    size = max(len(v_parts), len(t_parts))
-    v_parts += [0] * (size - len(v_parts))
-    t_parts += [0] * (size - len(t_parts))
-    return v_parts == t_parts
-
-
 def _check_manifest_versions(cwd: pathlib.Path, tag: str) -> list[str]:
     if not tag:
         return []
@@ -59,14 +39,14 @@ def _check_manifest_versions(cwd: pathlib.Path, tag: str) -> list[str]:
     if pkg.is_file():
         try:
             ver = str(json.loads(pkg.read_text(encoding="utf-8-sig")).get("version", ""))
-            if ver and not _version_matches_tag(ver, tag):
+            if ver and not version_matches_tag(ver, tag):
                 violations.append(f"[VERSION_MISMATCH] package.json version={ver} vs tag={tag}")
         except (OSError, ValueError) as exc:
             violations.append(f"[MANIFEST_ERROR] package.json unreadable: {exc}")
     pyproj = cwd / "pyproject.toml"
     if pyproj.is_file():
         match = re.search(r'(?m)^version\s*=\s*["\']([^"\']+)["\']', pyproj.read_text(encoding="utf-8-sig"))
-        if match and not _version_matches_tag(match.group(1), tag):
+        if match and not version_matches_tag(match.group(1), tag):
             violations.append(f"[VERSION_MISMATCH] pyproject.toml version={match.group(1)} vs tag={tag}")
     return violations
 
@@ -105,20 +85,25 @@ def _check_worktree_and_ports(cwd: pathlib.Path, git_root: pathlib.Path, mode: s
     return violations
 
 
-def _run_pre_merge(cwd: pathlib.Path, git_root: pathlib.Path, mode: str, tag: str,
-                   reviewed_sha: str, stamp_path: pathlib.Path, ports: str, extra_allow: list[str]) -> dict:
+def _run_pre_merge(
+    cwd: pathlib.Path, git_root: pathlib.Path, mode: str, tag: str, version: str, branch: str,
+    reviewed_sha: str, state_root: str, docs_root: str, ports: str, extra_allow: list[str],
+) -> dict:
     violations = _check_worktree_and_ports(cwd, git_root, mode, ports)
     violations += _check_manifest_versions(cwd, tag)
-    eff_sha, stamp_errs = verify_stamp_and_docs(cwd, mode, stamp_path, reviewed_sha)
-    violations += stamp_errs
+    eff_sha, review_errs = verify_review_pass_for_gate(
+        cwd, state_root, mode, tag, version, branch, reviewed_sha, docs_root,
+    )
+    violations += review_errs
     if eff_sha:
         violations += _check_reviewed_diff(git_root, eff_sha, set(DEFAULT_ALLOW_DIFF) | set(extra_allow))
-    else:
-        violations.append("[REVIEW_SHA_MISSING] reviewed_sha required via --reviewed-sha or review stamp")
+    elif not review_errs:
+        violations.append("[REVIEW_SHA_MISSING] reviewed_sha required from active pass record")
     return {
         "status": "FAILED" if violations else "PASSED",
         "phase": "pre-merge",
         "mode": mode,
+        "reviewed_sha": eff_sha,
         "violations": violations,
     }
 
@@ -154,17 +139,21 @@ def _run_post_tag(git_root: pathlib.Path, tag: str, branch: str) -> dict:
 
 
 def run_release_gate(
-    cwd: pathlib.Path, phase: str, mode: str = "", tag: str = "", reviewed_sha: str = "",
-    stamp: str = "", ports: str = "", allow_diff: list[str] | None = None, branch: str = "",
+    cwd: pathlib.Path, phase: str, mode: str = "", tag: str = "", version: str = "", branch: str = "",
+    reviewed_sha: str = "", state_root: str = "", docs_root: str = "",
+    ports: str = "", allow_diff: list[str] | None = None,
 ) -> tuple[int, dict]:
     cwd = cwd.expanduser().resolve()
     status, git_root = resolve_git_root(cwd)
     if status != "ok" or git_root is None:
         return 2, {"status": "FAILED", "phase": phase, "violations": [f"[NOT_GIT] git root unavailable ({status})"]}
-    eff_mode = resolve_mode(cwd, mode)
-    stamp_path = pathlib.Path(stamp).expanduser().resolve() if stamp else (cwd / ".loop" / "review-stamp.json")
+    eff_state = pathlib.Path(state_root).expanduser().resolve() if state_root else None
+    eff_mode = resolve_mode(cwd, mode, state_root=eff_state)
     if phase == "pre-merge":
-        report = _run_pre_merge(cwd, git_root, eff_mode, tag, reviewed_sha, stamp_path, ports, allow_diff or [])
+        report = _run_pre_merge(
+            cwd, git_root, eff_mode, tag, version, branch, reviewed_sha,
+            state_root, docs_root, ports, allow_diff or [],
+        )
     elif phase == "post-tag":
         report = _run_post_tag(git_root, tag, branch)
     else:

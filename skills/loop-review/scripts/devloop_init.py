@@ -11,6 +11,7 @@ from devloop_git import (
     is_ignored,
     is_tracked,
     legacy_shadow_config_path,
+    repo_prefix,
     resolve_git_exclude,
     resolve_git_root,
     shadow_config_path,
@@ -68,28 +69,63 @@ def _resolve_mode(requested: str, existing: dict | None, switch_mode: bool) -> t
     return requested, ""
 
 
-def _preflight_external(cwd: pathlib.Path) -> tuple[dict | None, str]:
+def _check_untracked(git_root: pathlib.Path, rel_paths: tuple[str, ...], mode: str) -> str:
+    for rel in rel_paths:
+        tr = is_tracked(git_root, rel)
+        if tr is None or tr:
+            return f"{mode} mode refuses tracked or unreadable {rel}/"
+    return ""
+
+
+def _build_exclude_probes(git_root: pathlib.Path, mode: str, prefix: str) -> tuple[bool, list[tuple[str, str, bool]], str]:
+    if mode == "external":
+        err = _check_untracked(git_root, (f"{prefix}.loop",), mode)
+        if err:
+            return False, [], err
+        agents_tr = is_tracked(git_root, f"{prefix}AGENTS.md")
+        if agents_tr is None:
+            return False, [], "git ls-files failed while inspecting AGENTS.md"
+        probes = [
+            (f"/{prefix}.loop/", f"{prefix}.loop/config.json", False),
+            (f"/{prefix}.loop/", f"{prefix}.loop/reviews/_probe/r01-pass.md", False),
+            (f"/{prefix}.loop/", f"{prefix}.loop/archive/_probe/r01-pass.md", False),
+        ]
+        if not agents_tr:
+            probes.append((f"/{prefix}AGENTS.md", f"{prefix}AGENTS.md", False))
+        return bool(agents_tr), probes, ""
+    err = _check_untracked(git_root, (f"{prefix}.loop/reviews", f"{prefix}.loop/archive"), mode)
+    if err:
+        return False, [], err
+    probes = [
+        (f"/{prefix}.loop/reviews/", f"{prefix}.loop/reviews", True),
+        (f"/{prefix}.loop/reviews/", f"{prefix}.loop/reviews/_probe/r01-pass.md", False),
+        (f"/{prefix}.loop/archive/", f"{prefix}.loop/archive", True),
+        (f"/{prefix}.loop/archive/", f"{prefix}.loop/archive/_probe/r01-pass.md", False),
+    ]
+    return False, probes, ""
+
+
+def _preflight_git_excludes(cwd: pathlib.Path, mode: str) -> tuple[dict | None, str]:
     status, git_root = resolve_git_root(cwd)
+    if mode == "own" and status == "not_git":
+        return None, ""
     if status != "ok" or git_root is None:
-        return None, f"external mode requires a git repository (status={status})"
+        return None, f"{mode} mode requires a git repository (status={status})"
     exclude_path = resolve_git_exclude(git_root)
     if exclude_path is None:
         return None, "failed to resolve git info/exclude path"
-    rel_base = cwd.relative_to(git_root).as_posix()
-    prefix = "" if rel_base in ("", ".") else f"{rel_base}/"
-    loop_tracked = is_tracked(git_root, f"{prefix}.loop")
-    if loop_tracked is None or loop_tracked:
-        return None, f"external mode refuses tracked or unreadable {prefix}.loop/"
-    agents_tracked = is_tracked(git_root, f"{prefix}AGENTS.md")
-    if agents_tracked is None:
-        return None, "git ls-files failed while inspecting AGENTS.md"
-    return {"git_root": git_root, "exclude_path": exclude_path, "prefix": prefix, "agents_tracked": agents_tracked}, ""
+    prefix = repo_prefix(cwd, git_root)
+    agents_tracked, probes, err = _build_exclude_probes(git_root, mode, prefix)
+    if err:
+        return None, err
+    return {"git_root": git_root, "exclude_path": exclude_path, "prefix": prefix, "agents_tracked": agents_tracked, "probes": probes}, ""
 
 
 def _preflight_targets(cwd: pathlib.Path, mode: str, agents_tracked: bool) -> str:
     doc_dir = (cwd / ".loop") if mode == "external" else cwd
     targets = [
         cwd / ".loop", cwd / ".loop" / "config.json", cwd / ".loop" / "handoff.md",
+        cwd / ".loop" / "reviews", cwd / ".loop" / "archive",
         doc_dir / "DECISIONS.md", doc_dir / "FEATURE_MAP.md",
     ]
     if not agents_tracked:
@@ -122,42 +158,13 @@ def _preflight_all(cwd: pathlib.Path, req_mode: str, switch_mode: bool) -> tuple
     mode, err = _resolve_mode(req_mode, existing_cfg, switch_mode)
     if err:
         return None, err
-    ext = None
-    if mode == "external":
-        ext, err = _preflight_external(cwd)
-        if err:
-            return None, err
+    ext, err = _preflight_git_excludes(cwd, mode)
+    if err:
+        return None, err
     err = _preflight_targets(cwd, mode, bool(ext and ext["agents_tracked"]))
     if err:
         return None, err
     return {"mode": mode, "existing_cfg": existing_cfg, "ext": ext, "refs": refs}, ""
-
-
-def _ensure_excludes(ext: dict) -> tuple[bool, list[str], str]:
-    git_root, exclude_path, prefix = ext["git_root"], ext["exclude_path"], ext["prefix"]
-    probes = [(f"/{prefix}.loop/", f"{prefix}.loop/config.json")]
-    if not ext["agents_tracked"]:
-        probes.append((f"/{prefix}AGENTS.md", f"{prefix}AGENTS.md"))
-    orig_exists = exclude_path.exists()
-    orig_text = exclude_path.read_text(encoding="utf-8") if orig_exists else ""
-    lines = orig_text.splitlines()
-    existing_set = {line.rstrip() for line in lines}
-    added = []
-    for rule, probe in probes:
-        if is_ignored(git_root, probe) is True:
-            continue
-        if rule not in existing_set:
-            lines.append(rule)
-            existing_set.add(rule)
-            added.append(rule)
-    if added:
-        exclude_path.parent.mkdir(parents=True, exist_ok=True)
-        exclude_path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
-    for rule, probe in probes:
-        if is_ignored(git_root, probe) is not True:
-            _restore_file(exclude_path, orig_exists, orig_text, bool(added))
-            return False, [], f"git check-ignore failed for {probe} after writing {rule}"
-    return True, added, ""
 
 
 def _restore_file(path: pathlib.Path, existed: bool, orig_text: str, changed: bool) -> None:
@@ -167,6 +174,30 @@ def _restore_file(path: pathlib.Path, existed: bool, orig_text: str, changed: bo
         path.write_text(orig_text, encoding="utf-8", newline="\n")
     else:
         path.unlink(missing_ok=True)
+
+
+def _ensure_excludes(ext: dict) -> tuple[bool, list[str], str]:
+    git_root, exclude_path = ext["git_root"], ext["exclude_path"]
+    orig_exists = exclude_path.exists()
+    orig_text = exclude_path.read_text(encoding="utf-8") if orig_exists else ""
+    lines = orig_text.splitlines()
+    existing_set = {line.rstrip() for line in lines}
+    added: list[str] = []
+    for rule, probe, is_dir in ext["probes"]:
+        if is_ignored(git_root, probe, is_dir=is_dir) is True:
+            continue
+        if rule not in existing_set:
+            lines.append(rule)
+            existing_set.add(rule)
+            added.append(rule)
+    if added:
+        exclude_path.parent.mkdir(parents=True, exist_ok=True)
+        exclude_path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    for rule, probe, is_dir in ext["probes"]:
+        if is_ignored(git_root, probe, is_dir=is_dir) is not True:
+            _restore_file(exclude_path, orig_exists, orig_text, bool(added))
+            return False, [], f"git check-ignore failed for {probe} after writing {rule}"
+    return True, added, ""
 
 
 def _copy_if_missing(src: pathlib.Path, dst: pathlib.Path) -> str:
@@ -216,7 +247,7 @@ def run_init(cwd: pathlib.Path, mode: str = "", languages: str = "auto",
         return 2, {"status": "FAILED", "error": err}
     eff_mode = state["mode"]
     exclude_ok, exclude_added = False, []
-    if eff_mode == "external":
+    if state["ext"]:
         exclude_ok, exclude_added, err = _ensure_excludes(state["ext"])
         if err:
             return 2, {"status": "FAILED", "error": err}
@@ -237,15 +268,10 @@ def run_init(cwd: pathlib.Path, mode: str = "", languages: str = "auto",
     status_block = render_status_block(eff_mode, index_mode, dec_rel, feat_rel, exclude_ok)
     upsert_marker_block(handoff_path, STATUS_START, STATUS_END, status_block)
     return 0, {
-        "status": "PASSED",
-        "cwd": str(cwd),
-        "mode": eff_mode,
-        "docs_index_mode": index_mode,
+        "status": "PASSED", "cwd": str(cwd), "mode": eff_mode, "docs_index_mode": index_mode,
         "agents_md": agents_state,
         "decisions": {"path": dec_rel, "action": dec_state},
         "feature_map": {"path": feat_rel, "action": feat_state},
         "handoff": {"path": ".loop/handoff.md", "action": handoff_init},
-        "exclude_added": exclude_added,
-        "exclude_verified": exclude_ok,
-        "languages": cfg["languages"],
+        "exclude_added": exclude_added, "exclude_verified": exclude_ok, "languages": cfg["languages"],
     }

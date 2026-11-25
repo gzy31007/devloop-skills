@@ -7,8 +7,6 @@ import hashlib
 import json
 import pathlib
 
-from devloop_git import run_git
-
 PLACEHOLDER_TEXTS = frozenset({"", "待填", "无", "无变更", "none", "tbd", "todo", "...", "n/a", "-"})
 STATUS_MAP = {
     "updated": "updated",
@@ -31,17 +29,20 @@ def _doc_sha256(path: pathlib.Path) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def resolve_mode(cwd: pathlib.Path, explicit_mode: str) -> str:
+def resolve_mode(cwd: pathlib.Path, explicit_mode: str, state_root: pathlib.Path | None = None) -> str:
     if explicit_mode in ("own", "external"):
         return explicit_mode
-    cfg = cwd / ".loop" / "config.json"
-    if cfg.is_file():
+    roots = [state_root, cwd] if state_root else [cwd]
+    for root in roots:
+        cfg = root / ".loop" / "config.json"
+        if not cfg.is_file():
+            continue
         try:
             loaded = json.loads(cfg.read_text(encoding="utf-8-sig"))
-            if isinstance(loaded, dict) and loaded.get("mode") in ("own", "external"):
-                return str(loaded["mode"])
         except (OSError, ValueError):
-            pass
+            continue
+        if isinstance(loaded, dict) and loaded.get("mode") in ("own", "external"):
+            return str(loaded["mode"])
     return "own"
 
 
@@ -141,12 +142,7 @@ def _resolve_claim(cli_status: str, cli_note: str, handoff_pair: tuple[str, str]
     return status, note
 
 
-def _head_sha(cwd: pathlib.Path) -> str:
-    proc = run_git(["rev-parse", "HEAD"], cwd)
-    return proc.stdout.strip() if proc and proc.returncode == 0 else ""
-
-
-def _collect_missing_docs(fp: dict) -> list[str]:
+def collect_missing_docs(fp: dict) -> list[str]:
     errs: list[str] = []
     if not fp["decisions_exists"]:
         errs.append(f"[DOCS_MISSING] missing {fp['decisions_path']}")
@@ -155,18 +151,17 @@ def _collect_missing_docs(fp: dict) -> list[str]:
     return errs
 
 
-def write_review_stamp(
-    cwd: pathlib.Path, mode: str = "", reviewed_sha: str = "", docs_root: pathlib.Path | None = None,
+def build_doc_attestation(
+    cwd: pathlib.Path, state_root: pathlib.Path, mode: str = "", docs_root: pathlib.Path | None = None,
     dec_status: str = "", dec_summary: str = "", feat_status: str = "", feat_summary: str = "",
-    base_dec_sha: str = "", base_feat_sha: str = "", out_path: pathlib.Path | None = None,
-) -> tuple[int, dict]:
+    base_dec_sha: str = "", base_feat_sha: str = "",
+) -> tuple[dict | None, list[str]]:
     cwd = cwd.expanduser().resolve()
-    fp = docs_fingerprint(cwd, mode, docs_root)
-    errors = _collect_missing_docs(fp)
-    sha = reviewed_sha.strip() or _head_sha(cwd)
-    if not sha:
-        errors.append("[REVIEW_SHA_MISSING] unable to resolve candidate SHA")
-    hs = parse_handoff_doc_sync(cwd / ".loop" / "handoff.md")
+    eff_mode = resolve_mode(cwd, mode, state_root=state_root)
+    eff_docs = docs_root if docs_root else (state_root if eff_mode == "external" else cwd)
+    fp = docs_fingerprint(cwd, eff_mode, eff_docs)
+    errors = collect_missing_docs(fp)
+    hs = parse_handoff_doc_sync(state_root / ".loop" / "handoff.md")
     d_stat, d_note = _resolve_claim(dec_status, dec_summary, hs.get("decisions", ("", "")))
     f_stat, f_note = _resolve_claim(feat_status, feat_summary, hs.get("feature_map", ("", "")))
     if fp["decisions_exists"]:
@@ -174,9 +169,8 @@ def write_review_stamp(
     if fp["feature_map_exists"]:
         errors += validate_doc_claim("FEATURE_MAP.md", f_stat, f_note, fp["feature_map_is_template"], fp["feature_map_sha256"], base_feat_sha)
     if errors:
-        return 1, {"status": "FAILED", "violations": errors}
-    stamp = {
-        "reviewed_sha": sha,
+        return None, errors
+    return {
         "mode": fp["mode"],
         "decisions_sha256": fp["decisions_sha256"],
         "decisions_status": d_stat,
@@ -184,42 +178,11 @@ def write_review_stamp(
         "feature_map_sha256": fp["feature_map_sha256"],
         "feature_map_status": f_stat,
         "feature_map_summary": f_note,
-    }
-    target = out_path if out_path else (cwd / ".loop" / "review-stamp.json")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(stamp, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
-    return 0, {"status": "PASSED", "stamp_path": str(target), "stamp": stamp}
+    }, []
 
 
-def verify_stamp_and_docs(cwd: pathlib.Path, mode: str, stamp_path: pathlib.Path, reviewed_sha: str) -> tuple[str, list[str]]:
-    fp = docs_fingerprint(cwd, mode)
-    violations = _collect_missing_docs(fp)
-    if not stamp_path.is_file():
-        return reviewed_sha, violations + [f"[STAMP_MISSING] review stamp missing: {stamp_path}"]
-    try:
-        stamp = json.loads(stamp_path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError) as exc:
-        return reviewed_sha, violations + [f"[STAMP_INVALID] {stamp_path}: {exc}"]
-    if not isinstance(stamp, dict):
-        return reviewed_sha, violations + [f"[STAMP_INVALID] {stamp_path}: JSON object expected"]
-    eff_sha = reviewed_sha or str(stamp.get("reviewed_sha", "")).strip()
-    violations += _compare_stamp_sha(cwd, reviewed_sha, str(stamp.get("reviewed_sha", "")))
-    violations += _compare_doc_fingerprints(fp, stamp)
-    return eff_sha, violations
-
-
-def _compare_stamp_sha(cwd: pathlib.Path, cli_sha: str, stamp_sha: str) -> list[str]:
-    if not (cli_sha and stamp_sha):
-        return []
-    r1 = run_git(["rev-parse", cli_sha], cwd)
-    r2 = run_git(["rev-parse", stamp_sha], cwd)
-    if r1 and r2 and r1.returncode == 0 and r2.returncode == 0 and r1.stdout.strip() == r2.stdout.strip():
-        return []
-    return ["[STAMP_SHA_MISMATCH] --reviewed-sha differs from review stamp"]
-
-
-def _compare_doc_fingerprints(fp: dict, stamp: dict) -> list[str]:
-    errs: list[str] = []
+def verify_doc_attestation(fp: dict, meta: dict) -> list[str]:
+    errs = collect_missing_docs(fp)
     pairs = (
         ("DECISIONS.md", "decisions_exists", "decisions_sha256", "decisions_is_template", "decisions_status", "decisions_summary"),
         ("FEATURE_MAP.md", "feature_map_exists", "feature_map_sha256", "feature_map_is_template", "feature_map_status", "feature_map_summary"),
@@ -227,7 +190,7 @@ def _compare_doc_fingerprints(fp: dict, stamp: dict) -> list[str]:
     for label, ex_k, sha_k, tmpl_k, st_k, note_k in pairs:
         if not fp[ex_k]:
             continue
-        if stamp.get(sha_k) != fp[sha_k]:
-            errs.append(f"[DOC_FINGERPRINT_MISMATCH] {label} changed since review stamp")
-        errs += validate_doc_claim(label, str(stamp.get(st_k, "")), str(stamp.get(note_k, "")), fp[tmpl_k], fp[sha_k], "")
+        if meta.get(sha_k) != fp[sha_k]:
+            errs.append(f"[DOC_FINGERPRINT_MISMATCH] {label} changed since review pass")
+        errs += validate_doc_claim(label, str(meta.get(st_k, "")), str(meta.get(note_k, "")), fp[tmpl_k], fp[sha_k], "")
     return errs

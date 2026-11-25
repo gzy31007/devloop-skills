@@ -15,8 +15,9 @@ SCRIPTS = pathlib.Path(__file__).resolve().parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from verify_gate_cases import check_ops_stamp_and_release_gate, check_publish_devloop_unit
+from verify_gate_cases import check_ops_review_and_release_gate, check_publish_devloop_unit
 from verify_ops_cases import check_generated_paths, check_ops_init_and_resolve
+from verify_review_cases import check_review_handoff_and_archive
 
 SKILLS = SCRIPTS.parents[1]
 ARCH_GATE = SCRIPTS / "arch_gate.py"
@@ -219,6 +220,7 @@ def check_skills():
     assert "| 版本 |" in fmap and "## 不变量" in fmap
     handoff = (refs / "handoff.template.md").read_text(encoding="utf-8")
     assert "源头防错自检表" in handoff and "文档同步声明" in handoff
+    assert "本版打回次数" not in handoff and "## 打回记录" not in handoff
     decisions = (refs / "decisions.template.md").read_text(encoding="utf-8")
     assert "可推翻" in decisions and "superseded" in decisions and decisions.index("可推翻") < 600
     return f"skills: 7 frontmatter names, {len(documents)} md files pass banned/style/emoji/paragraph checks"
@@ -241,7 +243,8 @@ def main():
         ("language_families", lambda: check_language_families(work)), ("js_methods", lambda: check_js_methods(work)),
         ("mixed_config", lambda: check_mixed_config(work)), ("generated_paths", lambda: check_generated_paths(work)),
         ("reaper", lambda: check_reaper(work)), ("ops_init_resolve", lambda: check_ops_init_and_resolve(work)),
-        ("ops_stamp_release", lambda: check_ops_stamp_and_release_gate(work)),
+        ("ops_review_handoff", lambda: check_review_handoff_and_archive(work)),
+        ("ops_review_release", lambda: check_ops_review_and_release_gate(work)),
         ("publish_devloop", lambda: check_publish_devloop_unit(work)),
         ("skills", check_skills), ("self_arch_gate", check_self_arch_gate),
     ]

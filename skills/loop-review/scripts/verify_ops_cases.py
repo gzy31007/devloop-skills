@@ -177,6 +177,9 @@ def check_ops_init_and_resolve(work: pathlib.Path) -> str:
     _init_git_repo(own)
     code, rep = _ops("init", "--cwd", str(own), "--mode", "own", cwd=own)
     assert code == 0 and rep["mode"] == "own" and rep["agents_md"] == "created", rep
+    assert rep["exclude_verified"] is True, rep
+    assert _git(own, "check-ignore", "-q", "--no-index", ".loop/reviews/_probe/r01-pass.md").returncode == 0
+    assert _git(own, "check-ignore", "-q", "--no-index", ".loop/archive/_probe/r01-pass.md").returncode == 0
     orig_agents = (own / "AGENTS.md").read_text(encoding="utf-8")
     _write(own / "AGENTS.md", "# Custom Header\n\n" + orig_agents + "\n# Custom Footer\n")
     cfg = json.loads((own / ".loop" / "config.json").read_text(encoding="utf-8"))
@@ -189,6 +192,12 @@ def check_ops_init_and_resolve(work: pathlib.Path) -> str:
     assert after_agents.startswith("# Custom Header\n\n") and after_agents.endswith("# Custom Footer\n")
     assert after_agents.count("<!-- devloop:index:start -->") == 1
     assert json.loads((own / ".loop" / "config.json").read_text(encoding="utf-8"))["max_lines"] == 250
+
+    own_neg = work / "own-negation"
+    _init_git_repo(own_neg)
+    _write(own_neg / ".gitignore", "!.loop/reviews/\n!.loop/reviews/**\n")
+    code, rep = _ops("init", "--cwd", str(own_neg), "--mode", "own", cwd=own_neg)
+    assert code == 2 and not (own_neg / ".loop").exists() and not (own_neg / "AGENTS.md").exists(), rep
 
     _check_init_preflight_rejections(work, own)
     e1 = _check_init_e1_and_negation(work)
