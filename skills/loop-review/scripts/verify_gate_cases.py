@@ -56,16 +56,20 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _seed_handoff(repo: pathlib.Path, version: str, branch: str) -> None:
+def _seed_handoff(repo: pathlib.Path, version: str, branch: str, baseline_sha: str, feat_note: str = "新增功能行") -> None:
     text = (
         f"# 交接\n\n| 字段 | 内容 |\n| --- | --- |\n"
-        f"| 版本 / 主题 | `{version} / gate` |\n| 分支 | `{branch}` |\n| 改动范围 | `app.py` |\n"
+        f"| 版本 / 主题 | `{version} / gate` |\n| 分支 | `{branch}` |\n"
+        f"| 基线 SHA | `{baseline_sha}` |\n| 改动范围 | `app.py` |\n| 自测与返工验证证据 | `pytest -> exit 0` |\n\n"
+        "## 文档同步声明\n\n| 文档 | 状态 | 摘要 |\n| --- | --- | --- |\n"
+        f"| `DECISIONS.md` | `已更新` | 新增条目 |\n| `FEATURE_MAP.md` | `已更新` | {feat_note} |\n"
     )
     _write(repo / ".loop" / "handoff.md", text)
 
 
-def _check_doc_attestation_edges(work: pathlib.Path, repo: pathlib.Path) -> None:
-    _seed_handoff(repo, "v0.1", "main")
+def _check_doc_attestation_edges(work: pathlib.Path, repo: pathlib.Path) -> str:
+    base0 = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _seed_handoff(repo, "v0.1", "main", base0)
     assert _git(repo, "add", ".").returncode == 0
     assert _git(repo, "commit", "-m", "seed handoff").returncode == 0
 
@@ -98,6 +102,7 @@ def _check_doc_attestation_edges(work: pathlib.Path, repo: pathlib.Path) -> None
         cwd=repo, stdin_text="# 结论\n测试基线未变拦截。\n",
     )
     assert code == 1 and any("[DOC_UNCHANGED]" in v for v in rep["violations"]), rep
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
 def _check_reject_and_strict_whitelist(repo: pathlib.Path, port: str) -> None:
@@ -123,7 +128,7 @@ def _check_reject_and_strict_whitelist(repo: pathlib.Path, port: str) -> None:
     assert code == 1 and any("[UNREVIEWED_DIFF] package.json" in v for v in rep["violations"]), rep
 
 
-def _check_md_pipe_splitting(work: pathlib.Path, repo: pathlib.Path) -> None:
+def _check_md_pipe_splitting(work: pathlib.Path, repo: pathlib.Path, feat_base: str) -> None:
     from devloop_docs import _is_feature_map_template, parse_handoff_doc_sync, split_md_row
     from devloop_review_store import parse_handoff_meta
 
@@ -141,7 +146,7 @@ def _check_md_pipe_splitting(work: pathlib.Path, repo: pathlib.Path) -> None:
     assert parse_handoff_meta(ho)["version"] == "v0.2 | demo"
     assert not _is_feature_map_template(_write(work / "k2-fmap.md", "| v0.2 | `a \\| b` | `x` |\n"))
 
-    _write(repo / ".loop" / "handoff.md", (repo / ".loop" / "handoff.md").read_text(encoding="utf-8") + "\n| `DECISIONS.md` | `\u5df2\u66f4\u65b0` | \u65b0\u589e\u6761\u76ee |\n| `FEATURE_MAP.md` | `\u5df2\u66f4\u65b0` | \u6539\u4e3a `\u7248\u672c \\| \u884c\u4e3a \\| \u5165\u53e3 \\| \u9a8c\u8bc1` \u56db\u5217 |\n")
+    _seed_handoff(repo, "v0.1", "feat/v0.1-gate", feat_base, feat_note="\u6539\u4e3a `\u7248\u672c \\| \u884c\u4e3a \\| \u5165\u53e3 \\| \u9a8c\u8bc1` \u56db\u5217")
     assert _git(repo, "add", ".loop/handoff.md").returncode == 0
     assert _git(repo, "commit", "-m", "escaped pipe summary").returncode == 0
     code, rep = _ops("review-record", "--cwd", str(repo), "--verdict", "pass", cwd=repo, stdin_text="# \u653e\u884c\n\u8f6c\u4e49\u7ad6\u7ebf\u9a8c\u8bc1\u3002\n")
@@ -163,12 +168,12 @@ def check_ops_review_and_release_gate(work: pathlib.Path) -> str:
     _init_git_repo(repo)
     assert _ops("init", "--cwd", str(repo), "--mode", "own", cwd=repo)[0] == 0
     _write(repo / "package.json", json.dumps({"name": "demo", "version": "0.1.0"}) + "\n")
-    _check_doc_attestation_edges(work, repo)
+    feat_base = _check_doc_attestation_edges(work, repo)
 
     assert _git(repo, "checkout", "-b", "feat/v0.1-gate").returncode == 0
     _write(repo / "DECISIONS.md", "# DECISIONS\n\n2026-11-25 | [active] | 选择：SQLite | 放弃：JSON | 触发：并发上升\n")
     _write(repo / "FEATURE_MAP.md", "# FEATURE_MAP\n\n| 版本 | 功能 | 入口 | 验证 |\n| --- | --- | --- | --- |\n| v0.1 | CLI 启动 | `app.py` | `pytest` |\n")
-    _seed_handoff(repo, "v0.1", "feat/v0.1-gate")
+    _seed_handoff(repo, "v0.1", "feat/v0.1-gate", feat_base)
     assert _git(repo, "add", "DECISIONS.md", "FEATURE_MAP.md", ".loop/handoff.md").returncode == 0
     assert _git(repo, "commit", "-m", "feat: v0.1 docs").returncode == 0
     cand_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
@@ -212,7 +217,7 @@ def check_ops_review_and_release_gate(work: pathlib.Path) -> str:
     assert any("[DOC_FINGERPRINT_MISMATCH]" in v for v in rep["violations"]), rep
     code, rep = _ops("release-gate", "--cwd", str(repo), "--phase", "post-tag", "--tag", "v0.1", cwd=repo)
     assert code == 1 and any("[TAG_HEAD_MISMATCH]" in v for v in rep["violations"]), rep
-    _check_md_pipe_splitting(work, repo)
+    _check_md_pipe_splitting(work, repo, feat_base)
     return "review-record pass/reject, pipe-splitting (seed=20261126), whitelist & release-gate verified"
 
 

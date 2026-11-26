@@ -24,7 +24,8 @@ HANDOFF_FIELD_KEYS = {
     "版本 / 主题": "version", "版本/主题": "version", "版本": "version",
     "分支": "branch", "源分支": "branch",
     "基线 SHA": "baseline_sha", "基线": "baseline_sha",
-    "改动范围": "has_evidence", "自测与返工验证证据": "has_evidence", "自测命令与退出码": "has_evidence",
+    "改动范围": "change_scope",
+    "自测与返工验证证据": "has_evidence", "自测命令与退出码": "has_evidence",
 }
 
 
@@ -71,29 +72,54 @@ def make_scope_key(version: str, branch: str) -> str:
 
 def _clean_cell(val: str) -> str:
     text = val.strip().strip("`").strip()
-    return "" if "<" in text or ">" in text or text.lower() in PLACEHOLDER_TEXTS else text
+    if not text or (text.startswith("<") and text.endswith(">")) or text.lower() in PLACEHOLDER_TEXTS:
+        return ""
+    return text
 
 
-def parse_handoff_meta(handoff_path: pathlib.Path) -> dict[str, str]:
-    meta: dict[str, str] = {}
-    if not handoff_path.is_file():
-        return meta
-    for line in handoff_path.read_text(encoding="utf-8-sig").splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("|"):
+def _top_meta_rows(text: str) -> list[list[str]]:
+    rows, in_table = [], False
+    for line in text.splitlines():
+        s = line.strip()
+        if not in_table:
+            if s.startswith("##") or s.startswith("<!-- devloop:"):
+                break
+            if not s.startswith("|"):
+                continue
+            in_table = True
+        elif not s.startswith("|"):
+            break
+        cells = split_md_row(s)
+        if cells and not all(set(c) <= set("-: ") for c in cells):
+            rows.append(cells)
+    return rows
+
+
+def parse_handoff_meta_text(text: str) -> tuple[dict[str, str], list[str]]:
+    meta, errors, seen = {}, [], set()
+    for cells in _top_meta_rows(text):
+        key_raw = cells[0].strip("*` ")
+        field = HANDOFF_FIELD_KEYS.get(key_raw) if len(cells) >= 2 else None
+        if not field:
             continue
-        cells = split_md_row(stripped)
-        field = HANDOFF_FIELD_KEYS.get(cells[0].strip("*` ")) if len(cells) >= 2 else None
-        val = _clean_cell(cells[1]) if field else ""
-        if not field or not val:
+        if field in seen:
+            errors.append(f"[HANDOFF_DUPLICATE_FIELD] duplicate metadata field: {key_raw}")
             continue
-        if field == "version":
+        seen.add(field)
+        val = _clean_cell(cells[1])
+        if field == "version" and val:
             val = _clean_cell(val.split("/", 1)[0])
-        elif field == "has_evidence":
+        elif field == "has_evidence" and val:
             val = "1"
         if val:
             meta[field] = val
-    return meta
+    return meta, errors
+
+
+def parse_handoff_meta(handoff_path: pathlib.Path) -> dict[str, str]:
+    if not handoff_path.is_file():
+        return {}
+    return parse_handoff_meta_text(handoff_path.read_text(encoding="utf-8-sig"))[0]
 
 
 def body_sha256(normalized_body: str) -> str:

@@ -32,6 +32,22 @@ def _ops(*args: str, cwd: pathlib.Path, stdin_text: str | None = None) -> tuple[
     return proc.returncode, json.loads(proc.stdout) if proc.stdout.strip().startswith("{") else {}
 
 
+def _write_docs_and_handoff(repo: pathlib.Path, mode: str, branch: str, base_sha: str, version: str = "v0.1", commit_msg: str = "handoff branch") -> None:
+    doc_dir = (repo / ".loop") if mode == "external" else repo
+    _write(doc_dir / "DECISIONS.md", "# DECISIONS\n\n2026-11-25 | [active] | 选择：A | 放弃：B | 触发：C\n")
+    _write(doc_dir / "FEATURE_MAP.md", "# F\n\n| 版本 | 功能 | 入口 | 验证 |\n| --- | --- | --- | --- |\n| v0.1 | X | `x` | `t` |\n")
+    handoff = (
+        f"# 交接\n\n| 字段 | 内容 |\n| --- | --- |\n| 版本 / 主题 | `{version} / demo` |\n| 分支 | `{branch}` |\n"
+        f"| 基线 SHA | `{base_sha}` |\n| 改动范围 | `app.py` |\n| 自测与返工验证证据 | `pytest -> exit 0` |\n\n"
+        "## 文档同步声明\n\n| 文档 | 状态 | 摘要 |\n| --- | --- | --- |\n"
+        "| `DECISIONS.md` | `已更新` | 新增条目 |\n| `FEATURE_MAP.md` | `已更新` | 新增功能行 |\n"
+    )
+    _write(repo / ".loop" / "handoff.md", handoff)
+    if mode == "own":
+        assert _git(repo, "add", "DECISIONS.md", "FEATURE_MAP.md", ".loop/handoff.md").returncode == 0
+        assert _git(repo, "commit", "-m", commit_msg).returncode == 0
+
+
 def _setup_repo(repo: pathlib.Path, mode: str, branch: str, version: str = "v0.1") -> str:
     repo.mkdir(parents=True, exist_ok=True)
     assert _git(repo, "init", "-b", "main").returncode == 0
@@ -41,21 +57,16 @@ def _setup_repo(repo: pathlib.Path, mode: str, branch: str, version: str = "v0.1
     assert _git(repo, "add", "app.py").returncode == 0
     assert _git(repo, "commit", "-m", "init").returncode == 0
     assert _ops("init", "--cwd", str(repo), "--mode", mode, cwd=repo)[0] == 0
-    doc_dir = (repo / ".loop") if mode == "external" else repo
-    _write(doc_dir / "DECISIONS.md", "# DECISIONS\n\n2026-11-25 | [active] | 选择：A | 放弃：B | 触发：C\n")
-    _write(doc_dir / "FEATURE_MAP.md", "# F\n\n| 版本 | 功能 | 入口 | 验证 |\n| --- | --- | --- | --- |\n| v0.1 | X | `x` | `t` |\n")
     if mode == "own":
         assert _git(repo, "add", ".").returncode == 0
         assert _git(repo, "commit", "-m", "init devloop").returncode == 0
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
     assert _git(repo, "checkout", "-b", branch).returncode == 0
-    handoff = (
-        f"# 交接\n\n| 字段 | 内容 |\n| --- | --- |\n| 版本 / 主题 | `{version} / demo` |\n| 分支 | `{branch}` |\n"
-        "| 改动范围 | `app.py` |\n\n| 文档 | 状态 | 摘要 |\n| --- | --- | --- |\n| `DECISIONS.md` | `已更新` | 新增条目 |\n| `FEATURE_MAP.md` | `已更新` | 新增功能行 |\n"
-    )
-    _write(repo / ".loop" / "handoff.md", handoff)
-    if mode == "own":
-        assert _git(repo, "add", ".loop/handoff.md").returncode == 0
-        assert _git(repo, "commit", "-m", "handoff branch").returncode == 0
+    _write_docs_and_handoff(repo, mode, branch, base_sha, version=version)
+    if mode == "external":
+        _write(repo / "app.py", "def run():\n    return 10\n")
+        assert _git(repo, "add", "app.py").returncode == 0
+        assert _git(repo, "commit", "-m", "external candidate").returncode == 0
     return _git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
@@ -176,9 +187,9 @@ def _check_released_status_edges(work: pathlib.Path, repo: pathlib.Path, scope_k
     forged = work / "forged-tag"
     _setup_repo(forged, "own", "feat/v0.1-f")
     assert _git(forged, "checkout", "main").returncode == 0
-    _write(forged / ".loop" / "handoff.md", "| 版本 | `v0.1` |\n| 分支 | `main` |\n| 改动范围 | `app.py` |\n")
-    for args in (("add", ".loop/handoff.md"), ("commit", "-m", "forged"), ("tag", "-a", "v0.1", "-m", "forged")):
-        assert _git(forged, *args).returncode == 0
+    forged_base = _git(forged, "rev-parse", "HEAD").stdout.strip()
+    _write_docs_and_handoff(forged, "own", "main", forged_base, commit_msg="forged")
+    assert _git(forged, "tag", "-a", "v0.1", "-m", "forged").returncode == 0
     st_f = _ops("review-status", "--cwd", str(forged), cwd=forged)[1]
     assert st_f["released_tag"] == "" and st_f["recommended_next"] == "/loop-review", st_f
 
@@ -245,12 +256,8 @@ def _check_archive_ambiguous(work: pathlib.Path) -> None:
     _setup_repo(ambig, "own", "feat/v0.1-x")
     assert _ops("review-record", "--cwd", str(ambig), "--verdict", "pass", cwd=ambig, stdin_text="# x\nok.\n")[0] == 0
     assert _git(ambig, "checkout", "-b", "feat/v0.1-y", "main").returncode == 0
-    handoff_y = ("# 交接\n\n| 字段 | 内容 |\n| --- | --- |\n| 版本 / 主题 | `v0.1 / y` |\n| 分支 | `feat/v0.1-y` |\n"
-                 "| 改动范围 | `app.py` |\n\n| 文档 | 状态 | 摘要 |\n| --- | --- | --- |\n"
-                 "| `DECISIONS.md` | `已更新` | 新增条目 |\n| `FEATURE_MAP.md` | `已更新` | 新增功能行 |\n")
-    _write(ambig / ".loop" / "handoff.md", handoff_y)
-    assert _git(ambig, "add", ".loop/handoff.md").returncode == 0
-    assert _git(ambig, "commit", "-m", "y handoff").returncode == 0
+    base_y = _git(ambig, "rev-parse", "HEAD").stdout.strip()
+    _write_docs_and_handoff(ambig, "own", "feat/v0.1-y", base_y, commit_msg="y handoff")
     assert _ops("review-record", "--cwd", str(ambig), "--verdict", "pass", cwd=ambig, stdin_text="# y\nok.\n")[0] == 0
     assert _git(ambig, "checkout", "main").returncode == 0
     code, rep = _ops("review-archive", "--cwd", str(ambig), "--tag", "v0.1", cwd=ambig)

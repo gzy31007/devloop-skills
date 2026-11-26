@@ -15,8 +15,9 @@ KIT_SKILLS = ("agent-docs", "hakimi", "loop-init", "loop-plan", "loop-build", "l
 KIT_SCRIPTS = (
     "arch_gate.py", "arch_js.py", "reap_and_run.py", "devloop_git.py", "devloop_markers.py",
     "devloop_docs.py", "devloop_init.py", "devloop_review_io.py", "devloop_review_store.py",
-    "devloop_reviews.py", "devloop_archive.py", "devloop_gate.py", "devloop_ops.py",
-    "verify_scripts.py", "verify_ops_cases.py", "verify_review_cases.py", "verify_gate_cases.py",
+    "devloop_preflight.py", "devloop_status.py", "devloop_reviews.py", "devloop_archive.py",
+    "devloop_gate.py", "devloop_ops.py", "verify_scripts.py", "verify_ops_cases.py",
+    "verify_preflight_cases.py", "verify_review_cases.py", "verify_gate_cases.py",
 )
 KIT_REFERENCES = (
     "config.example.json", "decisions.template.md", "feature_map.template.md",
@@ -30,11 +31,18 @@ def configure_stdio() -> None:
             stream.reconfigure(encoding="utf-8", errors="replace")
 
 
+def _readonly_git_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    return env
+
+
 def run_git(args: list[str], cwd: pathlib.Path) -> subprocess.CompletedProcess | None:
     try:
         return subprocess.run(
             ["git", *args],
             cwd=str(cwd),
+            env=_readonly_git_env(),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -43,6 +51,61 @@ def run_git(args: list[str], cwd: pathlib.Path) -> subprocess.CompletedProcess |
         )
     except FileNotFoundError:
         return None
+
+
+def git_common_dir(cwd: pathlib.Path) -> pathlib.Path | None:
+    proc = run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd)
+    if proc is None or proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return pathlib.Path(proc.stdout.strip()).resolve()
+
+
+def same_git_repo(a: pathlib.Path, b: pathlib.Path) -> bool:
+    ca, cb = git_common_dir(a), git_common_dir(b)
+    if ca is None or cb is None:
+        return False
+    return os.path.normcase(str(ca)) == os.path.normcase(str(cb))
+
+
+def git_show_bytes(git_root: pathlib.Path, rev_spec: str) -> bytes | None:
+    try:
+        proc = subprocess.run(
+            ["git", "show", rev_spec],
+            cwd=str(git_root),
+            env=_readonly_git_env(),
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def git_diff_name_status(git_root: pathlib.Path, baseline: str, head: str = "HEAD") -> tuple[list[dict] | None, str]:
+    proc = run_git(["-c", "core.quotepath=false", "diff", "--name-status", "-z", f"{baseline}..{head}"], git_root)
+    if proc is None or proc.returncode != 0:
+        return None, f"[DIFF_ERROR] git diff failed for {baseline[:12]}..{head[:12]}"
+    if not proc.stdout:
+        return [], ""
+    tokens = proc.stdout.split("\0")
+    if tokens and tokens[-1] == "":
+        tokens.pop()
+    entries, idx = [], 0
+    while idx < len(tokens):
+        status = tokens[idx]
+        if not status:
+            return None, "[DIFF_ERROR] unexpected empty diff status token"
+        if status[0] in ("R", "C"):
+            if idx + 2 >= len(tokens):
+                return None, "[DIFF_ERROR] truncated rename diff entry"
+            entries.append({"status": status, "old_path": tokens[idx + 1], "path": tokens[idx + 2]})
+            idx += 3
+        else:
+            if idx + 1 >= len(tokens):
+                return None, "[DIFF_ERROR] truncated diff entry"
+            entries.append({"status": status, "path": tokens[idx + 1]})
+            idx += 2
+    return entries, ""
 
 
 def resolve_git_root(cwd: pathlib.Path) -> tuple[str, pathlib.Path | None]:

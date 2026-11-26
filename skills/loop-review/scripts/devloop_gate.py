@@ -90,12 +90,16 @@ def _run_pre_merge(
 ) -> dict:
     violations = _check_worktree_and_ports(cwd, git_root, mode, ports)
     violations += _check_manifest_versions(cwd, tag)
+    for item in extra_allow:
+        norm = item.strip().replace("\\", "/")
+        if norm and norm not in DEFAULT_ALLOW_DIFF:
+            violations.append(f"[ALLOW_DIFF_FORBIDDEN] {item}: only .loop/handoff.md is permitted in release diff whitelist")
     eff_sha, review_errs = verify_review_pass_for_gate(
         cwd, state_root, mode, tag, version, branch, reviewed_sha, docs_root,
     )
     violations += review_errs
     if eff_sha:
-        violations += _check_reviewed_diff(git_root, eff_sha, set(DEFAULT_ALLOW_DIFF) | set(extra_allow))
+        violations += _check_reviewed_diff(git_root, eff_sha, set(DEFAULT_ALLOW_DIFF))
     elif not review_errs:
         violations.append("[REVIEW_SHA_MISSING] reviewed_sha required from active pass record")
     return {

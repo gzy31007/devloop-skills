@@ -17,6 +17,7 @@ if str(SCRIPTS) not in sys.path:
 
 from verify_gate_cases import check_ops_review_and_release_gate, check_publish_devloop_unit
 from verify_ops_cases import check_generated_paths, check_ops_init_and_resolve
+from verify_preflight_cases import check_preflight_and_status
 from verify_review_cases import check_review_handoff_and_archive
 
 SKILLS = SCRIPTS.parents[1]
@@ -243,6 +244,7 @@ def main():
         ("language_families", lambda: check_language_families(work)), ("js_methods", lambda: check_js_methods(work)),
         ("mixed_config", lambda: check_mixed_config(work)), ("generated_paths", lambda: check_generated_paths(work)),
         ("reaper", lambda: check_reaper(work)), ("ops_init_resolve", lambda: check_ops_init_and_resolve(work)),
+        ("ops_preflight_status", lambda: check_preflight_and_status(work)),
         ("ops_review_handoff", lambda: check_review_handoff_and_archive(work)),
         ("ops_review_release", lambda: check_ops_review_and_release_gate(work)),
         ("publish_devloop", lambda: check_publish_devloop_unit(work)),

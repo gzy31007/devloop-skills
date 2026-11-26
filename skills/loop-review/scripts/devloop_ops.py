@@ -13,12 +13,14 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from devloop_archive import run_review_archive, run_review_status
+from devloop_archive import run_review_archive
 from devloop_docs import docs_fingerprint
 from devloop_gate import run_release_gate
 from devloop_git import configure_stdio, is_valid_kit
 from devloop_init import run_init
+from devloop_preflight import run_preflight
 from devloop_reviews import run_review_record
+from devloop_status import run_review_status
 
 LOCAL_SKILL_DIRS = (".opencode/skills", ".agents/skills", ".claude/skills", "skills", "kits/devloop/skills")
 GLOBAL_SKILL_DIRS = (
@@ -95,13 +97,23 @@ def _cmd_docs_fingerprint(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def _cmd_preflight(args: argparse.Namespace) -> int:
+    code, payload = run_preflight(
+        pathlib.Path(args.cwd), state_root=args.state_root, docs_root=args.docs_root,
+        mode=args.mode, version=args.version, branch=args.branch, baseline=args.baseline,
+    )
+    _emit(payload, args.json)
+    return code
+
+
 def _cmd_review_record(args: argparse.Namespace) -> int:
     code, payload = run_review_record(
         pathlib.Path(args.cwd), verdict=args.verdict, category=args.category,
         state_root=args.state_root, docs_root=args.docs_root, mode=args.mode,
-        version=args.version, branch=args.branch, reviewed_sha=args.reviewed_sha,
-        reviewer=args.reviewer, summary=args.summary, body_file=args.body_file,
-        body_text=args.body, dec_status=args.decisions_status, dec_summary=args.decisions_summary,
+        version=args.version, branch=args.branch, baseline=args.baseline,
+        reviewed_sha=args.reviewed_sha, reviewer=args.reviewer, summary=args.summary,
+        body_file=args.body_file, body_text=args.body,
+        dec_status=args.decisions_status, dec_summary=args.decisions_summary,
         feat_status=args.feature_map_status, feat_summary=args.feature_map_summary,
         base_dec_sha=args.baseline_decisions_sha, base_feat_sha=args.baseline_feature_map_sha,
     )
@@ -139,6 +151,14 @@ def _cmd_release_gate(args: argparse.Namespace) -> int:
 
 
 def _add_review_parsers(sub) -> None:
+    p_pf = sub.add_parser("preflight", help="Run read-only preflight checks before review.")
+    for name, opts in (("--cwd", {"default": "."}), ("--state-root", {"default": ""}), ("--docs-root", {"default": ""}),
+                       ("--mode", {"default": "", "choices": ["", "own", "external"]}), ("--version", {"default": ""}),
+                       ("--branch", {"default": ""}), ("--baseline", {"default": ""})):
+        p_pf.add_argument(name, **opts)
+    p_pf.add_argument("--json", action="store_true")
+    p_pf.set_defaults(handler=_cmd_preflight)
+
     p_rec = sub.add_parser("review-record", help="Append immutable review verdict record under .loop/reviews/.")
     p_rec.add_argument("--cwd", default=".")
     p_rec.add_argument("--state-root", default="")
@@ -148,6 +168,7 @@ def _add_review_parsers(sub) -> None:
     p_rec.add_argument("--category", default="", choices=["", "method", "env"])
     p_rec.add_argument("--version", default="")
     p_rec.add_argument("--branch", default="")
+    p_rec.add_argument("--baseline", default="")
     p_rec.add_argument("--reviewed-sha", default="")
     p_rec.add_argument("--reviewer", default="loop-review")
     p_rec.add_argument("--summary", default="")

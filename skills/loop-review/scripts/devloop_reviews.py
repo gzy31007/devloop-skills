@@ -6,15 +6,10 @@ from __future__ import annotations
 import pathlib
 from datetime import datetime, timezone
 
-from devloop_docs import build_doc_attestation, docs_fingerprint, resolve_mode, verify_doc_attestation
-from devloop_git import (
-    current_branch,
-    head_sha,
-    is_worktree_clean,
-    resolve_commit_sha,
-    resolve_git_root,
-)
-from devloop_review_io import acquire_review_lock, atomic_write_new, read_body_outside_repo, verify_review_paths_ignored
+from devloop_docs import docs_fingerprint, verify_doc_attestation
+from devloop_git import current_branch, head_sha, is_worktree_clean, resolve_commit_sha
+from devloop_preflight import evaluate_preflight, load_handoff_content, resolve_review_roots
+from devloop_review_io import acquire_review_lock, atomic_write_new, read_body_outside_repo
 from devloop_review_store import (
     body_sha256,
     count_rejects,
@@ -22,80 +17,9 @@ from devloop_review_store import (
     format_review_doc,
     list_scope_records,
     make_scope_key,
-    normalize_version,
     parse_handoff_meta,
     version_matches_tag,
 )
-
-
-def resolve_review_roots(
-    cwd: pathlib.Path, state_root_arg: str = "", docs_root_arg: str = "", mode: str = "",
-) -> tuple[dict | None, list[str]]:
-    eff_cwd = cwd.expanduser().resolve()
-    st_c, cwd_git = resolve_git_root(eff_cwd)
-    if st_c != "ok" or cwd_git is None:
-        return None, [f"[NOT_GIT] cwd must be inside a git repository ({st_c})"]
-    eff_state = pathlib.Path(state_root_arg).expanduser().resolve() if state_root_arg else eff_cwd
-    st_s, state_git = resolve_git_root(eff_state)
-    if st_s != "ok" or state_git is None:
-        return None, [f"[NOT_GIT] state-root must be inside a git repository ({st_s})"]
-    eff_mode = resolve_mode(eff_cwd, mode, state_root=eff_state)
-    eff_docs = pathlib.Path(docs_root_arg).expanduser().resolve() if docs_root_arg else (eff_state if eff_mode == "external" else eff_cwd)
-    return {
-        "cwd": eff_cwd, "cwd_git": cwd_git,
-        "state": eff_state, "state_git": state_git,
-        "mode": eff_mode, "docs": eff_docs,
-    }, []
-
-
-def _validate_clean_and_head(roots: dict, reviewed_sha: str) -> tuple[str, list[str]]:
-    errors: list[str] = []
-    for label, groot in (("cwd", roots["cwd_git"]), ("state_root", roots["state_git"])):
-        if label == "state_root" and groot == roots["cwd_git"]:
-            continue
-        clean, first = is_worktree_clean(groot)
-        if clean is None:
-            errors.append(f"[GIT_ERROR] git status failed on {label}")
-        elif not clean:
-            errors.append(f"[DIRTY_WORKTREE] {label} has uncommitted changes: {first}")
-    cur_head = head_sha(roots["cwd"])
-    if not cur_head:
-        errors.append("[HEAD_MISSING] unable to resolve current HEAD commit")
-    elif reviewed_sha.strip():
-        target = resolve_commit_sha(roots["cwd"], reviewed_sha.strip())
-        if not target or target != cur_head:
-            errors.append(f"[CANDIDATE_HEAD_MISMATCH] reviewed_sha differs from HEAD ({cur_head[:12]})")
-    return cur_head, errors
-
-
-def _validate_branch_consistency(roots: dict, cur_head: str, ho_br: str, eff_br: str) -> list[str]:
-    errors: list[str] = []
-    cwd_br = current_branch(roots["cwd"])
-    if not eff_br:
-        return ["[BRANCH_MISSING] branch required via --branch, git branch, or .loop/handoff.md"]
-    if cwd_br and cwd_br != eff_br:
-        errors.append(f"[BRANCH_MISMATCH] current branch {cwd_br} differs from target branch {eff_br}")
-    if ho_br and ho_br != eff_br:
-        errors.append(f"[HANDOFF_BRANCH_MISMATCH] handoff branch {ho_br} differs from {eff_br}")
-    if cur_head:
-        tip = resolve_commit_sha(roots["state"], f"refs/heads/{eff_br}")
-        if tip and tip != cur_head:
-            errors.append(f"[BRANCH_HEAD_MISMATCH] branch {eff_br} tip {tip[:12]} differs from HEAD {cur_head[:12]}")
-    return errors
-
-
-def _resolve_scope_identity(roots: dict, cur_head: str, version: str, branch: str) -> tuple[str, str, str, list[str]]:
-    ho_meta = parse_handoff_meta(roots["state"] / ".loop" / "handoff.md")
-    raw_ver = version.strip() or ho_meta.get("version", "")
-    eff_ver, errors = "", []
-    try:
-        eff_ver = normalize_version(raw_ver)
-    except ValueError:
-        errors.append("[VERSION_MISSING] version required via --version or .loop/handoff.md")
-    eff_br = branch.strip() or current_branch(roots["cwd"]) or ho_meta.get("branch", "")
-    errors += _validate_branch_consistency(roots, cur_head, ho_meta.get("branch", ""), eff_br)
-    scope_key = make_scope_key(eff_ver, eff_br) if not errors else ""
-    return eff_ver, eff_br, scope_key, errors
 
 
 def _same_attempt(latest: dict, verdict: str, sha: str, b_sha: str, category: str, attest: dict | None) -> bool:
@@ -131,14 +55,43 @@ def _build_record_meta(
     return meta
 
 
+def _verify_lock_drift(roots: dict, pf: dict) -> list[str]:
+    errs: list[str] = []
+    cand_sha = pf["candidate_sha"]
+    if head_sha(roots["cwd"]) != cand_sha:
+        errs.append("[DRIFT_HEAD_CHANGED] candidate HEAD changed before review lock write")
+    for label, groot in (("cwd", roots["cwd_git"]), ("state_root", roots["state_git"])):
+        if label == "state_root" and groot == roots["cwd_git"]:
+            continue
+        clean, first = is_worktree_clean(groot)
+        if clean is False:
+            errs.append(f"[DIRTY_WORKTREE] {label} changed before lock write: {first}")
+    _, ho_sha, ho_errs = load_handoff_content(roots, cand_sha)
+    errs += ho_errs
+    if not ho_errs and ho_sha != pf["handoff_sha256"]:
+        errs.append("[DRIFT_HANDOFF_CHANGED] handoff.md changed before review lock write")
+    fp_now = docs_fingerprint(roots["cwd"], roots["mode"], roots["docs"])
+    fp_prev = pf["doc_fingerprints"]
+    if (
+        fp_now["decisions_sha256"] != fp_prev["decisions_sha256"]
+        or fp_now["feature_map_sha256"] != fp_prev["feature_map_sha256"]
+    ):
+        errs.append("[DRIFT_DOCS_CHANGED] DECISIONS.md or FEATURE_MAP.md changed before lock write")
+    return errs
+
+
 def _write_locked_record(
-    roots: dict, scope_key: str, verdict: str, category: str, eff_ver: str, eff_br: str,
-    cur_head: str, reviewer: str, norm_body: str, summary: str, attest: dict | None,
+    roots: dict, pf: dict, verdict: str, category: str, reviewer: str,
+    norm_body: str, summary: str, attest: dict | None,
 ) -> tuple[int, dict]:
+    scope_key, eff_ver, eff_br, cur_head = pf["scope_key"], pf["version"], pf["branch"], pf["candidate_sha"]
     b_sha = body_sha256(norm_body)
     eff_sum = derive_summary(summary, norm_body)
     scope_dir = roots["state"] / ".loop" / "reviews" / scope_key
     with acquire_review_lock(roots["state"]):
+        drift_errs = _verify_lock_drift(roots, pf)
+        if drift_errs:
+            return 1, {"status": "FAILED", "violations": drift_errs}
         records, rec_errs = list_scope_records(scope_dir)
         if rec_errs:
             return 1, {"status": "FAILED", "violations": rec_errs}
@@ -154,35 +107,32 @@ def _write_locked_record(
 
 def run_review_record(
     cwd: pathlib.Path, verdict: str, category: str = "", state_root: str = "", docs_root: str = "",
-    mode: str = "", version: str = "", branch: str = "", reviewed_sha: str = "", reviewer: str = "loop-review",
-    summary: str = "", body_file: str = "", body_text: str = "", dec_status: str = "", dec_summary: str = "",
-    feat_status: str = "", feat_summary: str = "", base_dec_sha: str = "", base_feat_sha: str = "",
+    mode: str = "", version: str = "", branch: str = "", baseline: str = "", reviewed_sha: str = "",
+    reviewer: str = "loop-review", summary: str = "", body_file: str = "", body_text: str = "",
+    dec_status: str = "", dec_summary: str = "", feat_status: str = "", feat_summary: str = "",
+    base_dec_sha: str = "", base_feat_sha: str = "",
 ) -> tuple[int, dict]:
     if verdict not in ("reject", "pending", "pass"):
         return 2, {"status": "FAILED", "violations": [f"[INVALID_VERDICT] unsupported verdict: {verdict!r}"]}
     if verdict == "reject" and category not in ("method", "env"):
         return 2, {"status": "FAILED", "violations": ["[CATEGORY_REQUIRED] --category method|env required for reject"]}
-    roots, root_errs = resolve_review_roots(cwd, state_root, docs_root, mode)
-    if root_errs or roots is None:
-        return 2, {"status": "FAILED", "violations": root_errs}
-    cur_head, errors = _validate_clean_and_head(roots, reviewed_sha)
-    eff_ver, eff_br, scope_key, id_errs = _resolve_scope_identity(roots, cur_head, version, branch)
-    errors += id_errs
-    _, ign_errs = verify_review_paths_ignored(roots["state"], (".loop/reviews",))
-    errors += ign_errs
+    pf_code, pf, roots, attest = evaluate_preflight(
+        cwd, state_root=state_root, docs_root=docs_root, mode=mode,
+        version=version, branch=branch, baseline=baseline, reviewed_sha=reviewed_sha,
+        dec_status=dec_status, dec_summary=dec_summary, feat_status=feat_status, feat_summary=feat_summary,
+        base_dec_sha=base_dec_sha, base_feat_sha=base_feat_sha,
+    )
+    if pf_code == 2 or roots is None:
+        return 2, {"status": "FAILED", "violations": pf["violations"]}
+    errors = list(pf["violations"])
     norm_body, body_err = read_body_outside_repo(body_file, body_text, roots["cwd"], roots["cwd_git"], roots["state_git"])
     if body_err:
         errors.append(body_err)
-    attest: dict | None = None
-    if verdict == "pass":
-        attest, att_errs = build_doc_attestation(
-            roots["cwd"], roots["state"], roots["mode"], roots["docs"],
-            dec_status, dec_summary, feat_status, feat_summary, base_dec_sha, base_feat_sha,
-        )
-        errors += att_errs
     if errors:
         return 1, {"status": "FAILED", "violations": errors}
-    return _write_locked_record(roots, scope_key, verdict, category, eff_ver, eff_br, cur_head, reviewer, norm_body, summary, attest)
+    return _write_locked_record(
+        roots, pf, verdict, category, reviewer, norm_body, summary, attest if verdict == "pass" else None,
+    )
 
 
 def _resolve_gate_scope(roots: dict, tag: str, version: str, branch: str) -> tuple[str, str, str]:

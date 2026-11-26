@@ -17,20 +17,20 @@ description: 审查全绿后执行两阶段发版门禁、合主干打标签、�
 | 2. 合前门禁（`pre-merge`） | `python <loop-review-dir>/scripts/devloop_ops.py release-gate --cwd . --phase pre-merge --tag vX.Y --json` | 工作树干净、无 `.tmp/`、端口空闲、当前作用域最新裁决为 `pass`、差异仅含 `.loop/handoff.md`、版本与文档指纹全匹配 |
 | 3. 合主干与打标签 | 切回 `main` 后优先快进合并；若无法快进则完成合并并在合并树重跑测试与 `arch_gate.py --json .` 通过后再执行 `git tag -a vX.Y -m "release vX.Y"` | 主干推进到合并后最新提交，合并树验证通过再打标签 |
 | 4. 标后复核（`post-tag`） | `python <loop-review-dir>/scripts/devloop_ops.py release-gate --cwd . --phase post-tag --tag vX.Y --branch main --json` | 标签存在、解引用提交与当前主干 `HEAD` 一致且工作树干净 |
-| 5. 读取打回与归档 | 读取 `.loop/reviews/<scope-key>/` 下全部 `rNN-reject.md` 原件按三层优先级沉淀教训，随后执行 `python <loop-review-dir>/scripts/devloop_ops.py review-archive --cwd . --tag vX.Y --json` | 教训落盘；无论打回 0 次或多次，整目录原子移入 `.loop/archive/<scope-key>/` |
+| 5. 读取打回与归档 | 读取 `.loop/reviews/<scope-key>/` 下全部 `rNN-reject.md` 原件按分层沉淀表落盘，随后执行 `python <loop-review-dir>/scripts/devloop_ops.py review-archive --cwd . --tag vX.Y --json` | 教训落盘；无论打回 0 次或多次，整目录原子移入 `.loop/archive/<scope-key>/` |
 | 6. 发版记录与推送 | 在提交之外的发版日志记录 `release_sha` 与回滚命令；若配置或宿主声明 `telemetry_log`，追加标准 `released` JSONL 事件；对外推送须遵守用户明确授权 | 遥测与回滚依据完整 |
 
 `telemetry_log` 标准 `released` JSONL 字段：`{"event":"released","tag":"vX.Y","reviewed_sha":"...","release_sha":"...","mode":"own","retro_path":"..."}`。
 
 ## 二、分层沉淀复盘教训
 
-按固定优先级沉淀本轮 `.loop/reviews/<scope-key>/` 中全部打回原件与遗留风险，每条教训落入最靠前的一层：
+按固定优先级沉淀本轮 `.loop/reviews/<scope-key>/` 中全部打回原件与遗留风险，项目特化规则留在本仓库 `DECISIONS.md` / `AGENTS.md`，跨项目通用模式才回流套件共用清单或门禁脚本：
 
 | 优先级 | 落点 | 适用情形 |
 | --- | --- | --- |
-| 1 | 门禁脚本（`arch_gate.py`、`devloop_ops.py`、`verify_scripts.py`） | 可机械检查并拦截的结构、路径、配置或流程错误 |
-| 2 | 行为与脏输入属性回归测试 | 静态检查覆盖不到的运行时缺陷，验证入口同步写入 `FEATURE_MAP.md` |
-| 3 | 上游技能（`loop-build`、`loop-review`、`review-checklist.md`、`loop-retro`） | 跨项目通用编码防错、审查盲区或流程改进 |
+| 1 | 门禁脚本（`arch_gate.py`、`devloop_ops.py`、`verify_scripts.py`） | 可机械检查并拦截的跨项目结构、路径、配置或流程错误 |
+| 2 | 本项目测试与本仓库文档（`DECISIONS.md`、`FEATURE_MAP.md`、`AGENTS.md`） | 单项目专属运行时回归、领域不变量与项目特化工程约定 |
+| 3 | 套件共用清单与技能（`review-checklist.md`、`loop-build`、`loop-review`、`loop-retro`） | 跨项目通性编码防错、写审同源核对项或流程改进 |
 
 同步核对 `DECISIONS.md` 现行前提：前提变化则重写条目并将被取代条目标记 `[superseded by YYYY-MM-DD 新摘要]`。
 
