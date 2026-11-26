@@ -27,7 +27,7 @@ python <loop-review-dir>/scripts/devloop_ops.py init --cwd . --mode own --json
 python <loop-review-dir>/scripts/devloop_ops.py init --cwd . --mode external --json
 ```
 
-重复运行保持幂等：默认保留已有 `mode`、全部自定义配置键以及 `DECISIONS.md`、`FEATURE_MAP.md` 与 `.loop/handoff.md` 既有内容；显式切换模式传入 `--switch-mode`，迁移旧目录名影子配置传入 `--migrate-shadow`。
+重复运行保持幂等：保留已有 `mode` 与其他自定义配置键，`ignore_dirs` 与默认忽略目录去重并集合并，保留 `DECISIONS.md`、`FEATURE_MAP.md` 与 `.loop/handoff.md` 既有内容；如需移除默认忽略目录直接编辑 `.loop/config.json`，显式切换模式传入 `--switch-mode`，迁移目录名影子配置传入 `--migrate-shadow`。
 
 ## 基线门禁与交接
 

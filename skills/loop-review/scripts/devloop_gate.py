@@ -8,7 +8,7 @@ import pathlib
 import re
 
 from devloop_docs import resolve_mode
-from devloop_git import is_tracked, resolve_git_root, run_git
+from devloop_git import is_ancestor, is_tracked, resolve_git_root, run_git
 from devloop_review_store import version_matches_tag
 from devloop_reviews import verify_review_pass_for_gate
 from reap_and_run import DEFAULT_PORTS_SPEC, probe_ports
@@ -52,8 +52,7 @@ def _check_manifest_versions(cwd: pathlib.Path, tag: str) -> list[str]:
 
 
 def _check_reviewed_diff(git_root: pathlib.Path, reviewed_sha: str, allow_diff: set[str]) -> list[str]:
-    proc = run_git(["merge-base", "--is-ancestor", reviewed_sha, "HEAD"], git_root)
-    if proc is None or proc.returncode != 0:
+    if not is_ancestor(git_root, reviewed_sha):
         return [f"[NOT_ANCESTOR] reviewed_sha {reviewed_sha} is absent from HEAD ancestry"]
     diff_proc = run_git(["diff", "--name-only", f"{reviewed_sha}..HEAD"], git_root)
     if diff_proc is None or diff_proc.returncode != 0:

@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import pathlib
+import re
 
 PLACEHOLDER_TEXTS = frozenset({"", "待填", "无", "无变更", "none", "tbd", "todo", "...", "n/a", "-"})
 STATUS_MAP = {
@@ -64,6 +65,27 @@ def _is_decisions_template(path: pathlib.Path) -> bool:
     return not any("| [active] |" in line or "| [superseded" in line for line in raw.splitlines())
 
 
+def split_md_row(line: str) -> list[str]:
+    """Split a Markdown table row on unescaped `|` delimiters and unescape `\\|`."""
+    text = line.strip()
+    if not text:
+        return []
+    cells, buf, pos, last_delim_end = [], [], 0, -1
+    for match in re.finditer(r"\\(\||\\)|(\|)", text):
+        buf.append(text[pos:match.start()])
+        esc, pipe = match.groups()
+        if pipe:
+            cells.append("".join(buf).strip())
+            buf, last_delim_end = [], match.end()
+        else:
+            buf.append("|" if esc == "|" else "\\\\")
+        pos = match.end()
+    buf.append(text[pos:])
+    if last_delim_end != len(text):
+        cells.append("".join(buf).strip())
+    return cells[1:] if text.startswith("|") else cells
+
+
 def _is_feature_map_template(path: pathlib.Path) -> bool:
     raw = _norm_text(path.read_text(encoding="utf-8-sig"))
     tmpl = _norm_text((ref_dir() / "feature_map.template.md").read_text(encoding="utf-8-sig"))
@@ -73,7 +95,7 @@ def _is_feature_map_template(path: pathlib.Path) -> bool:
         stripped = line.strip()
         if not stripped.startswith("|") or stripped.startswith("| ---"):
             continue
-        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        cells = split_md_row(stripped)
         if len(cells) >= 3 and cells[0] not in ("版本", "功能") and not all(c.startswith("<") or not c for c in cells):
             return False
     return True
@@ -110,7 +132,7 @@ def parse_handoff_doc_sync(handoff_path: pathlib.Path) -> dict[str, tuple[str, s
         stripped = line.strip()
         if not stripped.startswith("|"):
             continue
-        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        cells = split_md_row(stripped)
         if len(cells) < 3:
             continue
         status = STATUS_MAP.get(cells[1].strip().strip("`"), "")

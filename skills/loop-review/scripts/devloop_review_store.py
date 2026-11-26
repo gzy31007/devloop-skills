@@ -8,6 +8,7 @@ import json
 import pathlib
 import re
 
+from devloop_docs import split_md_row
 from devloop_review_io import normalize_body
 
 META_PREFIX = "<!-- devloop:review-meta "
@@ -29,6 +30,8 @@ HANDOFF_FIELD_KEYS = {
 
 def version_matches_tag(version: str, tag: str) -> bool:
     v_norm, t_norm = version.strip().lstrip("vV"), tag.strip().lstrip("vV")
+    if not v_norm or not t_norm:
+        return False
     if v_norm == t_norm:
         return True
     v_core, v_pre = (v_norm.split("-", 1) + [""])[:2]
@@ -79,7 +82,7 @@ def parse_handoff_meta(handoff_path: pathlib.Path) -> dict[str, str]:
         stripped = line.strip()
         if not stripped.startswith("|"):
             continue
-        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        cells = split_md_row(stripped)
         field = HANDOFF_FIELD_KEYS.get(cells[0].strip("*` ")) if len(cells) >= 2 else None
         val = _clean_cell(cells[1]) if field else ""
         if not field or not val:
@@ -212,3 +215,16 @@ def count_rejects(records: list[dict]) -> dict:
         "cross_model_recommended": len(rejects) >= 2,
         "circuit_breaker_triggered": len(rejects) >= 3,
     }
+
+
+def find_archived_pass_records(archive_root: pathlib.Path, version: str) -> list[tuple[str, dict]]:
+    if not version.strip():
+        return []
+    found: list[tuple[str, dict]] = []
+    for key in list_active_scope_keys(archive_root):
+        if not version_matches_tag(key.split("__", 1)[0], version):
+            continue
+        recs, errs = list_scope_records(archive_root / key)
+        if not errs and recs and recs[-1]["verdict"] == "pass" and version_matches_tag(recs[-1]["version"], version):
+            found.append((key, recs[-1]))
+    return found

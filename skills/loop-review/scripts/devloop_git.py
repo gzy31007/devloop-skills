@@ -105,6 +105,21 @@ def resolve_commit_sha(cwd: pathlib.Path, ref: str) -> str:
     return proc.stdout.strip() if proc and proc.returncode == 0 else ""
 
 
+def tags_at_head(cwd: pathlib.Path) -> list[str]:
+    proc = run_git(["tag", "--points-at", "HEAD"], cwd)
+    if proc is None or proc.returncode != 0:
+        return []
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+
+def is_ancestor(cwd: pathlib.Path, ancestor: str, descendant: str = "HEAD") -> bool:
+    anc, desc = ancestor.strip(), descendant.strip()
+    if not anc or not desc or anc.startswith("-") or desc.startswith("-"):
+        return False
+    proc = run_git(["merge-base", "--is-ancestor", anc, desc], cwd)
+    return bool(proc and proc.returncode == 0)
+
+
 def is_worktree_clean(git_root: pathlib.Path) -> tuple[bool | None, str]:
     proc = run_git(["status", "--porcelain"], git_root)
     if proc is None or proc.returncode != 0:

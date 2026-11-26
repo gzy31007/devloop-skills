@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -19,10 +20,7 @@ def _write(path: pathlib.Path, text: str) -> pathlib.Path:
 
 
 def _run(cmd: list[str], cwd: pathlib.Path, stdin_text: str | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        cmd, cwd=str(cwd), input=stdin_text, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", timeout=120, check=False,
-    )
+    return subprocess.run(cmd, cwd=str(cwd), input=stdin_text, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, check=False)
 
 
 def _git(cwd: pathlib.Path, *args: str) -> subprocess.CompletedProcess:
@@ -51,10 +49,8 @@ def _setup_repo(repo: pathlib.Path, mode: str, branch: str, version: str = "v0.1
         assert _git(repo, "commit", "-m", "init devloop").returncode == 0
     assert _git(repo, "checkout", "-b", branch).returncode == 0
     handoff = (
-        f"# 交接\n\n| 字段 | 内容 |\n| --- | --- |\n"
-        f"| 版本 / 主题 | `{version} / demo` |\n| 分支 | `{branch}` |\n| 改动范围 | `app.py` |\n\n"
-        "| 文档 | 状态 | 摘要 |\n| --- | --- | --- |\n"
-        "| `DECISIONS.md` | `已更新` | 新增条目 |\n| `FEATURE_MAP.md` | `已更新` | 新增功能行 |\n"
+        f"# 交接\n\n| 字段 | 内容 |\n| --- | --- |\n| 版本 / 主题 | `{version} / demo` |\n| 分支 | `{branch}` |\n"
+        "| 改动范围 | `app.py` |\n\n| 文档 | 状态 | 摘要 |\n| --- | --- | --- |\n| `DECISIONS.md` | `已更新` | 新增条目 |\n| `FEATURE_MAP.md` | `已更新` | 新增功能行 |\n"
     )
     _write(repo / ".loop" / "handoff.md", handoff)
     if mode == "own":
@@ -176,7 +172,39 @@ def _check_ignore_guards(work: pathlib.Path) -> None:
     assert code == 1 and any("[REVIEW_PATH_TRACKED]" in v for v in rep["violations"]), rep
 
 
+def _check_released_status_edges(work: pathlib.Path, repo: pathlib.Path, scope_key: str) -> None:
+    forged = work / "forged-tag"
+    _setup_repo(forged, "own", "feat/v0.1-f")
+    assert _git(forged, "checkout", "main").returncode == 0
+    _write(forged / ".loop" / "handoff.md", "| 版本 | `v0.1` |\n| 分支 | `main` |\n| 改动范围 | `app.py` |\n")
+    for args in (("add", ".loop/handoff.md"), ("commit", "-m", "forged"), ("tag", "-a", "v0.1", "-m", "forged")):
+        assert _git(forged, *args).returncode == 0
+    st_f = _ops("review-status", "--cwd", str(forged), cwd=forged)[1]
+    assert st_f["released_tag"] == "" and st_f["recommended_next"] == "/loop-review", st_f
+
+    st_done = _ops("review-status", "--cwd", str(repo), cwd=repo)[1]
+    assert st_done["pending_archive_scopes"] == [] and st_done["released_tag"] == "v0.1"
+    assert st_done["archived_scope"] == scope_key and st_done["recommended_next"] == "/loop-plan", st_done
+
+    scope_dir = pathlib.Path(st_done["scope_dir"])
+    _write(scope_dir / "r01-pass.md", "corrupt")
+    try:
+        code_c, st_c = _ops("review-status", "--cwd", str(repo), cwd=repo)
+    finally:
+        shutil.rmtree(scope_dir, ignore_errors=True)
+    assert code_c == 1 and st_c["recommended_next"] == "fix_corrupt_records", st_c
+
+    _write(repo / ".loop" / "handoff.md", "| 版本 | `v0.2` |\n| 分支 | `main` |\n")
+    try:
+        st_v2 = _ops("review-status", "--cwd", str(repo), cwd=repo)[1]
+        assert st_v2["recommended_next"] == "/loop-build" and st_v2["released_tag"] == "", st_v2
+    finally:
+        assert _git(repo, "checkout", "--", ".loop/handoff.md").returncode == 0
+
+
 def _check_archive_and_pending_scopes(work: pathlib.Path) -> None:
+    from devloop_review_store import version_matches_tag
+    assert not version_matches_tag("", "") and not version_matches_tag("", "v")
     repo = work / "archive-repo"
     _setup_repo(repo, "own", "feat/v0.1-clean")
     code, r1 = _ops("review-record", "--cwd", str(repo), "--verdict", "pass", cwd=repo, stdin_text="# 一次过审\n零打回放行。\n")
@@ -185,41 +213,45 @@ def _check_archive_and_pending_scopes(work: pathlib.Path) -> None:
 
     assert _git(repo, "checkout", "main").returncode == 0
     assert _git(repo, "merge", "--no-ff", "feat/v0.1-clean", "-m", "merge v0.1").returncode == 0
+    assert _git(repo, "tag", "-a", "v0.1", "-m", "release v0.1").returncode == 0
     st = _ops("review-status", "--cwd", str(repo), cwd=repo)[1]
-    assert any(item["scope_key"] == scope_key for item in st["pending_archive_scopes"]), st
+    assert st["recommended_next"] == "/loop-retro" and st["released_tag"] == "v0.1"
+    assert st["archived_scope"] == "" and any(item["scope_key"] == scope_key for item in st["pending_archive_scopes"]), st
 
     code, arch = _ops("review-archive", "--cwd", str(repo), "--tag", "v0.1", cwd=repo)
-    assert code == 0 and arch["archived"] is True and arch["idempotent"] is False, arch
+    assert code == 0 and arch["archived"] and not arch["idempotent"], arch
     assert not (repo / ".loop" / "reviews" / scope_key).exists(), "source dir remained after archive"
     assert (repo / ".loop" / "archive" / scope_key / "r01-pass.md").is_file(), "archived file missing"
-    assert _ops("review-status", "--cwd", str(repo), cwd=repo)[1]["pending_archive_scopes"] == [], "pending_archive_scopes not empty"
+    _check_released_status_edges(work, repo, scope_key)
 
     code, arch_dup = _ops("review-archive", "--cwd", str(repo), "--tag", "v0.1", cwd=repo)
     assert code == 0 and arch_dup["idempotent"] is True, arch_dup
 
     assert _git(repo, "checkout", "feat/v0.1-clean").returncode == 0
-    _ops("review-record", "--cwd", str(repo), "--verdict", "pass", cwd=repo, stdin_text="# 新内容冲突\n不同正文触发归档冲突。\n")
+    assert _ops("review-record", "--cwd", str(repo), "--verdict", "pass", cwd=repo, stdin_text="# 新内容冲突\n不同正文触发归档冲突。\n")[0] == 0
     code, conflict = _ops("review-archive", "--cwd", str(repo), "--tag", "v0.1", cwd=repo)
     assert code == 1 and any("[ARCHIVE_CONFLICT]" in v for v in conflict["violations"]), conflict
+
+    assert _git(repo, "checkout", "main").returncode == 0
+    _write(repo / "app.py", "def run():\n    return 3\n")
+    _git(repo, "add", "app.py")
+    _git(repo, "commit", "-m", "post-tag commit")
+    st_ahead = _ops("review-status", "--cwd", str(repo), "--version", "v0.1", cwd=repo)[1]
+    assert st_ahead["released_tag"] == "" and st_ahead["archived_scope"] == "", st_ahead
 
 
 def _check_archive_ambiguous(work: pathlib.Path) -> None:
     ambig = work / "archive-ambig"
     _setup_repo(ambig, "own", "feat/v0.1-x")
-    c_x, r_x = _ops("review-record", "--cwd", str(ambig), "--verdict", "pass", cwd=ambig, stdin_text="# x\nok.\n")
-    assert c_x == 0, r_x
+    assert _ops("review-record", "--cwd", str(ambig), "--verdict", "pass", cwd=ambig, stdin_text="# x\nok.\n")[0] == 0
     assert _git(ambig, "checkout", "-b", "feat/v0.1-y", "main").returncode == 0
-    handoff_y = (
-        "# 交接\n\n| 字段 | 内容 |\n| --- | --- |\n"
-        "| 版本 / 主题 | `v0.1 / y` |\n| 分支 | `feat/v0.1-y` |\n| 改动范围 | `app.py` |\n\n"
-        "| 文档 | 状态 | 摘要 |\n| --- | --- | --- |\n"
-        "| `DECISIONS.md` | `已更新` | 新增条目 |\n| `FEATURE_MAP.md` | `已更新` | 新增功能行 |\n"
-    )
+    handoff_y = ("# 交接\n\n| 字段 | 内容 |\n| --- | --- |\n| 版本 / 主题 | `v0.1 / y` |\n| 分支 | `feat/v0.1-y` |\n"
+                 "| 改动范围 | `app.py` |\n\n| 文档 | 状态 | 摘要 |\n| --- | --- | --- |\n"
+                 "| `DECISIONS.md` | `已更新` | 新增条目 |\n| `FEATURE_MAP.md` | `已更新` | 新增功能行 |\n")
     _write(ambig / ".loop" / "handoff.md", handoff_y)
     assert _git(ambig, "add", ".loop/handoff.md").returncode == 0
     assert _git(ambig, "commit", "-m", "y handoff").returncode == 0
-    c_y, r_y = _ops("review-record", "--cwd", str(ambig), "--verdict", "pass", cwd=ambig, stdin_text="# y\nok.\n")
-    assert c_y == 0, r_y
+    assert _ops("review-record", "--cwd", str(ambig), "--verdict", "pass", cwd=ambig, stdin_text="# y\nok.\n")[0] == 0
     assert _git(ambig, "checkout", "main").returncode == 0
     code, rep = _ops("review-archive", "--cwd", str(ambig), "--tag", "v0.1", cwd=ambig)
     assert code == 1 and any("[ARCHIVE_SCOPE_AMBIGUOUS]" in v for v in rep["violations"]), rep

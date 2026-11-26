@@ -164,6 +164,45 @@ def _check_init_preflight_rejections(work: pathlib.Path, own: pathlib.Path) -> N
     assert not (bad_mark / ".loop").exists()
 
 
+def _check_ignore_dirs_merge(work: pathlib.Path) -> None:
+    import arch_gate
+    ex_cfg = json.loads((SKILLS / "loop-review" / "references" / "config.example.json").read_text(encoding="utf-8-sig"))
+    assert arch_gate.DEFAULTS["ignore_dirs"] == ex_cfg["ignore_dirs"]
+
+    repo = work / "k1-merge-repo"
+    _init_git_repo(repo)
+    _write(repo / ".loop" / "config.json", json.dumps({
+        "mode": "own", "max_lines": 250, "ignore_dirs": [".git", "custom-out", " ", "custom-out", 123],
+    }))
+    code, rep = _ops("init", "--cwd", str(repo), cwd=repo)
+    assert code == 0, rep
+    cfg = json.loads((repo / ".loop" / "config.json").read_text(encoding="utf-8"))
+    assert cfg["max_lines"] == 250 and cfg["ignore_dirs"][:2] == [".git", "custom-out"], cfg["ignore_dirs"]
+    for req in (".opencode", ".agents", ".claude", ".codex", ".loop"):
+        assert req in cfg["ignore_dirs"] and cfg["ignore_dirs"].count(req) == 1, cfg["ignore_dirs"]
+    before = (repo / ".loop" / "config.json").read_bytes()
+    assert _ops("init", "--cwd", str(repo), cwd=repo)[0] == 0
+    assert (repo / ".loop" / "config.json").read_bytes() == before
+
+    _write(repo / ".loop" / "config.json", json.dumps({"mode": "own", "ignore_dirs": "bad"}))
+    assert _ops("init", "--cwd", str(repo), cwd=repo)[0] == 0
+    assert json.loads((repo / ".loop" / "config.json").read_text(encoding="utf-8"))["ignore_dirs"] == ex_cfg["ignore_dirs"]
+
+    from devloop_git import legacy_shadow_config_path
+    mig = work / "k1-migrate-ext"
+    _init_git_repo(mig)
+    legacy = legacy_shadow_config_path(mig)
+    _write(legacy, json.dumps({"ignore_dirs": [".git", "legacy-out"]}))
+    try:
+        assert _ops("init", "--cwd", str(mig), "--mode", "external", "--migrate-shadow", cwd=mig)[0] == 0
+        m_cfg = json.loads((mig / ".loop" / "config.json").read_text(encoding="utf-8"))
+        assert "legacy-out" in m_cfg["ignore_dirs"] and ".opencode" in m_cfg["ignore_dirs"], m_cfg["ignore_dirs"]
+        _write(legacy, "{corrupt")
+        assert _ops("init", "--cwd", str(mig), "--mode", "external", "--migrate-shadow", cwd=mig)[0] == 0
+    finally:
+        legacy.unlink(missing_ok=True)
+
+
 def check_ops_init_and_resolve(work: pathlib.Path) -> str:
     env = {**os.environ, "DEVLOOP_KIT": str(SKILLS)}
     code, rep = _ops("resolve-kit", "--cwd", str(work), cwd=work, env=env)
@@ -202,4 +241,5 @@ def check_ops_init_and_resolve(work: pathlib.Path) -> str:
     _check_init_preflight_rejections(work, own)
     e1 = _check_init_e1_and_negation(work)
     _check_init_e2_and_transition(work, e1)
-    return "devloop_ops: resolve-kit, own idempotency, atomic preflight, E1/E2/E1->E2, path-hash shadow verified"
+    _check_ignore_dirs_merge(work)
+    return "devloop_ops: resolve-kit, own idempotency, ignore_dirs merge, preflight, E1/E2 verified"

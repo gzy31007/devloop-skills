@@ -7,25 +7,10 @@ import json
 import pathlib
 
 from devloop_docs import ref_dir
-from devloop_git import (
-    is_ignored,
-    is_tracked,
-    legacy_shadow_config_path,
-    repo_prefix,
-    resolve_git_exclude,
-    resolve_git_root,
-    shadow_config_path,
-)
-from devloop_markers import (
-    INDEX_END,
-    INDEX_START,
-    STATUS_END,
-    STATUS_START,
-    render_agents_block,
-    render_status_block,
-    upsert_marker_block,
-    validate_marker_pair,
-)
+from devloop_git import (is_ignored, is_tracked, legacy_shadow_config_path, repo_prefix,
+                         resolve_git_exclude, resolve_git_root, shadow_config_path)
+from devloop_markers import (INDEX_END, INDEX_START, STATUS_END, STATUS_START, render_agents_block,
+                             render_status_block, upsert_marker_block, validate_marker_pair)
 
 VALID_MODES = ("own", "external")
 REQUIRED_TEMPLATES = ("config.example.json", "decisions.template.md", "feature_map.template.md", "handoff.template.md")
@@ -208,25 +193,34 @@ def _copy_if_missing(src: pathlib.Path, dst: pathlib.Path) -> str:
     return "created"
 
 
+def _merge_ignore_dirs(*cfgs: dict | None) -> list[str]:
+    merged, seen = [], set()
+    for cfg in cfgs:
+        raw = cfg.get("ignore_dirs") if isinstance(cfg, dict) else None
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            val = item.strip() if isinstance(item, str) else ""
+            if val and val not in seen:
+                seen.add(val)
+                merged.append(val)
+    return merged
+
+
 def _write_config(cwd: pathlib.Path, state: dict, languages: str, migrate_shadow: bool) -> dict:
     defaults = json.loads((state["refs"] / "config.example.json").read_text(encoding="utf-8-sig"))
-    merged = dict(defaults)
-    mode = state["mode"]
+    merged, mode, old = dict(defaults), state["mode"], None
     if mode == "external" and migrate_shadow:
-        legacy = legacy_shadow_config_path(cwd)
-        if legacy.is_file():
-            try:
-                old = json.loads(legacy.read_text(encoding="utf-8-sig"))
-                if isinstance(old, dict):
-                    merged.update(old)
-            except (OSError, ValueError):
-                pass
+        old, _ = _load_existing_config(legacy_shadow_config_path(cwd))
+        if old:
+            merged.update(old)
     if state["existing_cfg"]:
         merged.update(state["existing_cfg"])
     elif languages == "auto":
         merged["languages"] = detect_languages(cwd)
     else:
         merged["languages"] = [item.strip() for item in languages.split(",") if item.strip()]
+    merged["ignore_dirs"] = _merge_ignore_dirs(state["existing_cfg"], old, defaults)
     merged["mode"] = mode
     text = json.dumps(merged, ensure_ascii=False, indent=2) + "\n"
     cfg_path = cwd / ".loop" / "config.json"

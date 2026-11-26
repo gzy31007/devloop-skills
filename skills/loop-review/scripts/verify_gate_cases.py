@@ -6,6 +6,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import random
+import re
 import shutil
 import socket
 import subprocess
@@ -121,6 +123,41 @@ def _check_reject_and_strict_whitelist(repo: pathlib.Path, port: str) -> None:
     assert code == 1 and any("[UNREVIEWED_DIFF] package.json" in v for v in rep["violations"]), rep
 
 
+def _check_md_pipe_splitting(work: pathlib.Path, repo: pathlib.Path) -> None:
+    from devloop_docs import _is_feature_map_template, parse_handoff_doc_sync, split_md_row
+    from devloop_review_store import parse_handoff_meta
+
+    assert split_md_row("| a | b") == ["a", "b"] and split_md_row(r"| a | b \|") == ["a", "b |"]
+    assert split_md_row(r"| a | path\\|") == ["a", r"path\\"] and split_md_row(r"| a | b \\\| c |") == ["a", r"b \\| c"]
+    assert split_md_row(r"| a | D:\foo\bar |") == ["a", r"D:\foo\bar"] and split_md_row("|") == [] and split_md_row("||") == [""]
+
+    ho = work / "k2-handoff.md"
+    ho.write_bytes(b"\xef\xbb\xbf" + (
+        "| \u7248\u672c | `v0.2 \\| demo` |\r\n"
+        "| `DECISIONS.md` | `\u5df2\u66f4\u65b0` | \u5199\u5165\\|\u6458\u8981 |\r\n"
+        "| `FEATURE_MAP.md` | `\u5df2\u66f4\u65b0` | \u6539\u4e3a `\u7248\u672c \\| \u884c\u4e3a \\| \u5165\u53e3 \\| \u9a8c\u8bc1` \u56db\u5217 |\r\n"
+    ).encode("utf-8"))
+    assert parse_handoff_doc_sync(ho)["feature_map"][1] == "\u6539\u4e3a `\u7248\u672c | \u884c\u4e3a | \u5165\u53e3 | \u9a8c\u8bc1` \u56db\u5217"
+    assert parse_handoff_meta(ho)["version"] == "v0.2 | demo"
+    assert not _is_feature_map_template(_write(work / "k2-fmap.md", "| v0.2 | `a \\| b` | `x` |\n"))
+
+    _write(repo / ".loop" / "handoff.md", (repo / ".loop" / "handoff.md").read_text(encoding="utf-8") + "\n| `DECISIONS.md` | `\u5df2\u66f4\u65b0` | \u65b0\u589e\u6761\u76ee |\n| `FEATURE_MAP.md` | `\u5df2\u66f4\u65b0` | \u6539\u4e3a `\u7248\u672c \\| \u884c\u4e3a \\| \u5165\u53e3 \\| \u9a8c\u8bc1` \u56db\u5217 |\n")
+    assert _git(repo, "add", ".loop/handoff.md").returncode == 0
+    assert _git(repo, "commit", "-m", "escaped pipe summary").returncode == 0
+    code, rep = _ops("review-record", "--cwd", str(repo), "--verdict", "pass", cwd=repo, stdin_text="# \u653e\u884c\n\u8f6c\u4e49\u7ad6\u7ebf\u9a8c\u8bc1\u3002\n")
+    assert code == 0 and rep["record"]["feature_map_summary"] == "\u6539\u4e3a `\u7248\u672c | \u884c\u4e3a | \u5165\u53e3 | \u9a8c\u8bc1` \u56db\u5217", rep
+
+    rng = random.Random(20261126)
+    safe_toks, dirty_chars = ("a", "\u4e2d", " ", "`", "|", "\\\\", "\\a"), "|\\a `\u4e2d\t"
+    for _ in range(200):
+        cells = ["".join(rng.choice(safe_toks) for _ in range(rng.randint(0, 6))).strip() for _ in range(3)]
+        assert split_md_row("| " + " | ".join(c.replace("|", r"\|") for c in cells) + " |") == cells
+        raw = "".join(rng.choice(dirty_chars) for _ in range(rng.randint(0, 20)))
+        assert isinstance(split_md_row(raw), list)
+        expected_cols = sum(1 for m in re.finditer(r"(\\+)\||(\|)", raw) if m.group(2) or len(m.group(1)) % 2 == 0) + 1
+        assert len(split_md_row(f"| {raw} |")) == expected_cols, raw
+
+
 def check_ops_review_and_release_gate(work: pathlib.Path) -> str:
     repo = work / "gate-repo"
     _init_git_repo(repo)
@@ -175,7 +212,8 @@ def check_ops_review_and_release_gate(work: pathlib.Path) -> str:
     assert any("[DOC_FINGERPRINT_MISMATCH]" in v for v in rep["violations"]), rep
     code, rep = _ops("release-gate", "--cwd", str(repo), "--phase", "post-tag", "--tag", "v0.1", cwd=repo)
     assert code == 1 and any("[TAG_HEAD_MISMATCH]" in v for v in rep["violations"]), rep
-    return "review-record pass/reject-after-pass, narrowed whitelist & two-phase release-gate verified"
+    _check_md_pipe_splitting(work, repo)
+    return "review-record pass/reject, pipe-splitting (seed=20261126), whitelist & release-gate verified"
 
 
 def _seed_publish_pair(work: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
