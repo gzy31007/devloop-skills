@@ -8,7 +8,7 @@ import pathlib
 from devloop_docs import docs_fingerprint
 from devloop_git import current_branch, head_sha, is_ancestor, is_worktree_clean, resolve_commit_sha, run_git, tags_at_head
 from devloop_markers import INDEX_START
-from devloop_preflight import resolve_review_roots, run_preflight
+from devloop_preflight import load_handoff_content, resolve_review_roots, run_preflight
 from devloop_review_store import (count_rejects, find_archived_pass_records, list_active_scope_keys,
                                   list_scope_records, make_scope_key, parse_handoff_meta, version_matches_tag)
 from devloop_ship import read_retro_meta, read_ship_receipt, scan_corrupt_meta
@@ -22,13 +22,9 @@ def _pending_archive_scopes(reviews_root: pathlib.Path, current_scope: str) -> l
         recs, errs = list_scope_records(reviews_root / key)
         latest = recs[-1] if recs else {}
         pending.append({
-            "scope_key": key,
-            "version": latest.get("version", key.split("__", 1)[0]),
-            "branch": latest.get("branch", ""),
-            "latest_verdict": latest.get("verdict", "corrupt" if errs else "none"),
-            "latest_reviewed_sha": latest.get("reviewed_sha", ""),
-            "record_count": len(recs),
-            "corrupt": bool(errs),
+            "scope_key": key, "version": latest.get("version", key.split("__", 1)[0]),
+            "branch": latest.get("branch", ""), "latest_verdict": latest.get("verdict", "corrupt" if errs else "none"),
+            "latest_reviewed_sha": latest.get("reviewed_sha", ""), "record_count": len(recs), "corrupt": bool(errs),
         })
     return pending
 
@@ -47,10 +43,7 @@ def _pass_is_fresh(roots: dict, latest: dict, cur_head: str) -> bool:
     fp = docs_fingerprint(roots["cwd"], roots["mode"], roots["docs"])
     if not fp["decisions_exists"] or not fp["feature_map_exists"]:
         return False
-    return (
-        latest.get("decisions_sha256") == fp["decisions_sha256"]
-        and latest.get("feature_map_sha256") == fp["feature_map_sha256"]
-    )
+    return latest.get("decisions_sha256") == fp["decisions_sha256"] and latest.get("feature_map_sha256") == fp["feature_map_sha256"]
 
 
 def _recommend_for_no_records(roots: dict, ho_meta: dict) -> tuple[str, str, bool]:
@@ -68,6 +61,28 @@ def _recommend_for_reject(latest: dict, counts: dict, cur_head: str, clean: bool
     if latest["reviewed_sha"] != cur_head and clean:
         return "/loop-review", f"new candidate {cur_head[:12]} committed after r{latest['round']:02d} reject", False
     return "/loop-build", f"latest round r{latest['round']:02d} rejected ({latest.get('category', '')})", False
+
+
+def _pending_inputs_drifted(roots: dict, latest: dict, cur_head: str) -> bool:
+    keys = ("handoff_sha256", "decisions_sha256", "feature_map_sha256")
+    if not any(latest.get(k) for k in keys):
+        return False
+    _, ho_sha, ho_errs = load_handoff_content(roots, cur_head)
+    fp = docs_fingerprint(roots["cwd"], roots["mode"], roots["docs"])
+    cur = {"handoff_sha256": "" if ho_errs else ho_sha, "decisions_sha256": fp["decisions_sha256"], "feature_map_sha256": fp["feature_map_sha256"]}
+    return any(latest.get(k) and latest.get(k) != cur[k] for k in keys)
+
+
+def _recommend_for_pending(roots: dict, latest: dict, counts: dict, cur_head: str, clean: bool) -> tuple[str, str, bool]:
+    if counts["circuit_breaker_triggered"]:
+        return "manual_decision", "circuit breaker triggered after 3+ rejections", False
+    if not clean:
+        return "/loop-build", "worktree dirty after pending verdict; commit or clean first", False
+    if latest["reviewed_sha"] != cur_head:
+        return "/loop-review", f"new candidate {cur_head[:12]} committed after r{latest['round']:02d} pending", False
+    if _pending_inputs_drifted(roots, latest, cur_head):
+        return "/loop-review", f"handoff or docs changed after r{latest['round']:02d} pending", False
+    return "manual_browser_verify", "latest verdict pending manual browser verification", False
 
 
 def _valid_ship_for_head(cwd: pathlib.Path, reviews_root: pathlib.Path, scope_key: str, reviewed_sha: str, cur_head: str) -> tuple[str, str, str] | None:
@@ -176,7 +191,7 @@ def _recommend_next(
     if latest["verdict"] == "reject":
         return (*_recommend_for_reject(latest, counts, cur_head, clean), "", "", "", "")
     if latest["verdict"] == "pending":
-        return "manual_browser_verify", "latest verdict pending manual browser verification", False, "", "", "", ""
+        return (*_recommend_for_pending(roots, latest, counts, cur_head, clean), "", "", "", "")
     if _pass_is_fresh(roots, latest, cur_head):
         return "/loop-ship", f"latest round r{latest['round']:02d} passed; ready for /loop-ship", False, "", "", "", ""
     return "/loop-review", "code or docs changed since latest pass record", True, "", "", "", ""
@@ -214,43 +229,32 @@ def _status_for_git_repo(roots: dict, state_root: str, docs_root: str, version: 
     cur_head, cwd_br = head_sha(roots["cwd"]), current_branch(roots["cwd"])
     clean, _ = is_worktree_clean(roots["cwd_git"])
     ho_meta = parse_handoff_meta(roots["state"] / ".loop" / "handoff.md")
-    eff_ver = version.strip() or ho_meta.get("version", "")
-    eff_br = branch.strip() or cwd_br or ho_meta.get("branch", "")
+    eff_ver, eff_br = version.strip() or ho_meta.get("version", ""), branch.strip() or cwd_br or ho_meta.get("branch", "")
     scope_key = _safe_scope_key(eff_ver, eff_br)
     reviews_root, archive_root = roots["state"] / ".loop" / "reviews", roots["state"] / ".loop" / "archive"
     records, corrupt = list_scope_records(reviews_root / scope_key) if scope_key else ([], [])
     corrupt += scan_corrupt_meta(reviews_root, archive_root)
-    counts = count_rejects(records)
-    pending = _pending_archive_scopes(reviews_root, scope_key)
+    counts, pending = count_rejects(records), _pending_archive_scopes(reviews_root, scope_key)
     nxt, reason, pass_stale, rel_tag, arch_scope, ship_scope, ship_kind = _recommend_next(
         _is_initialized(roots), corrupt, records, counts, roots, scope_key, cur_head, bool(clean), ho_meta, eff_ver, pending,
     )
-    nxt, reason, pf_checked, pf_passed, pf_violations = _apply_preflight_gate(
-        roots, state_root, docs_root, version, branch, nxt, reason,
-    )
+    nxt, reason, pf_checked, pf_passed, pf_violations = _apply_preflight_gate(roots, state_root, docs_root, version, branch, nxt, reason)
     latest = records[-1] if records else None
     payload = {
-        "status": "FAILED" if corrupt else "PASSED", "is_git": True,
-        "git_root": str(roots["cwd_git"]), "mode": roots["mode"], "initialized": _is_initialized(roots),
-        "head_sha": cur_head, "current_branch": cwd_br, "worktree_clean": bool(clean),
-        "version": eff_ver, "branch": eff_br, "scope_key": scope_key,
-        "scope_dir": str(reviews_root / scope_key) if scope_key else "",
-        "active_records": records, "latest_record": latest,
-        "latest_verdict": latest["verdict"] if latest else "none",
-        "latest_reviewed_sha": latest["reviewed_sha"] if latest else "",
-        "pass_stale": pass_stale, "released_tag": rel_tag, "archived_scope": arch_scope,
-        "shipped_scope": ship_scope, "ship_kind": ship_kind,
-        "preflight_checked": pf_checked, "preflight_passed": pf_passed,
-        "preflight_violations": pf_violations,
-        "corrupt_records": corrupt, "pending_archive_scopes": pending,
-        "recommended_next": nxt, "recommended_reason": reason, **counts,
+        "status": "FAILED" if corrupt else "PASSED", "is_git": True, "git_root": str(roots["cwd_git"]), "mode": roots["mode"],
+        "initialized": _is_initialized(roots), "head_sha": cur_head, "current_branch": cwd_br, "worktree_clean": bool(clean),
+        "version": eff_ver, "branch": eff_br, "scope_key": scope_key, "scope_dir": str(reviews_root / scope_key) if scope_key else "",
+        "active_records": records, "latest_record": latest, "latest_verdict": latest["verdict"] if latest else "none",
+        "latest_reviewed_sha": latest["reviewed_sha"] if latest else "", "pass_stale": pass_stale,
+        "released_tag": rel_tag, "archived_scope": arch_scope, "shipped_scope": ship_scope, "ship_kind": ship_kind,
+        "preflight_checked": pf_checked, "preflight_passed": pf_passed, "preflight_violations": pf_violations,
+        "corrupt_records": corrupt, "pending_archive_scopes": pending, "recommended_next": nxt, "recommended_reason": reason, **counts,
     }
     return (1 if corrupt else 0), payload
 
 
 def run_review_status(
-    cwd: pathlib.Path, state_root: str = "", docs_root: str = "", mode: str = "",
-    version: str = "", branch: str = "",
+    cwd: pathlib.Path, state_root: str = "", docs_root: str = "", mode: str = "", version: str = "", branch: str = "",
 ) -> tuple[int, dict]:
     eff_cwd = cwd.expanduser().resolve()
     if not eff_cwd.is_dir():
@@ -259,9 +263,8 @@ def run_review_status(
     if root_errs or roots is None:
         return 0, {
             "status": "PASSED", "is_git": False, "initialized": False, "released_tag": "", "archived_scope": "",
-            "shipped_scope": "", "ship_kind": "",
-            "preflight_checked": False, "preflight_passed": False, "preflight_violations": [],
-            "recommended_next": "/loop-init", "recommended_reason": root_errs[0],
+            "shipped_scope": "", "ship_kind": "", "preflight_checked": False, "preflight_passed": False,
+            "preflight_violations": [], "recommended_next": "/loop-init", "recommended_reason": root_errs[0],
             "pending_archive_scopes": [], "active_records": [],
         }
     return _status_for_git_repo(roots, state_root, docs_root, version, branch)

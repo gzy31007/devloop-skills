@@ -22,11 +22,26 @@ from devloop_review_store import (
 )
 
 
-def _same_attempt(latest: dict, verdict: str, sha: str, b_sha: str, category: str, attest: dict | None) -> bool:
+def _pending_fingerprints(pf: dict) -> dict[str, str]:
+    fp = pf["doc_fingerprints"]
+    return {
+        "handoff_sha256": pf["handoff_sha256"],
+        "decisions_sha256": fp["decisions_sha256"],
+        "feature_map_sha256": fp["feature_map_sha256"],
+    }
+
+
+def _same_attempt(
+    latest: dict, verdict: str, sha: str, b_sha: str, category: str,
+    attest: dict | None, pending_fp: dict | None = None,
+) -> bool:
     if latest["verdict"] != verdict or latest["reviewed_sha"] != sha or latest["body_sha256"] != b_sha:
         return False
     if verdict == "reject":
         return latest.get("category") == category
+    if verdict == "pending" and pending_fp:
+        keys = ("handoff_sha256", "decisions_sha256", "feature_map_sha256")
+        return all(latest.get(k) == pending_fp.get(k) for k in keys if k in latest)
     if verdict == "pass" and attest:
         keys = ("decisions_sha256", "feature_map_sha256", "decisions_status", "feature_map_status")
         return all(latest.get(k) == attest.get(k) for k in keys)
@@ -36,6 +51,7 @@ def _same_attempt(latest: dict, verdict: str, sha: str, b_sha: str, category: st
 def _build_record_meta(
     verdict: str, category: str, eff_ver: str, eff_br: str, next_round: int,
     cur_head: str, reviewer: str, b_sha: str, summary: str, attest: dict | None,
+    pending_fp: dict | None = None,
 ) -> dict:
     meta: dict = {
         "version": eff_ver,
@@ -50,6 +66,8 @@ def _build_record_meta(
     }
     if verdict == "reject":
         meta["category"] = category
+    if verdict == "pending" and pending_fp:
+        meta.update(pending_fp)
     if verdict == "pass" and attest:
         meta.update(attest)
     return meta
@@ -95,10 +113,11 @@ def _write_locked_record(
         records, rec_errs = list_scope_records(scope_dir)
         if rec_errs:
             return 1, {"status": "FAILED", "violations": rec_errs}
-        if records and _same_attempt(records[-1], verdict, cur_head, b_sha, category, attest):
+        if records and _same_attempt(records[-1], verdict, cur_head, b_sha, category, attest, pending_fp=_pending_fingerprints(pf) if verdict == "pending" else None):
             return 0, {"status": "PASSED", "idempotent": True, "scope_key": scope_key, "record": records[-1], **count_rejects(records)}
         next_round = (records[-1]["round"] + 1) if records else 1
-        meta = _build_record_meta(verdict, category, eff_ver, eff_br, next_round, cur_head, reviewer, b_sha, eff_sum, attest)
+        pending_fp = _pending_fingerprints(pf) if verdict == "pending" else None
+        meta = _build_record_meta(verdict, category, eff_ver, eff_br, next_round, cur_head, reviewer, b_sha, eff_sum, attest, pending_fp=pending_fp)
         target = scope_dir / f"r{next_round:02d}-{verdict}.md"
         atomic_write_new(target, format_review_doc(meta, norm_body))
         saved = {**meta, "filename": target.name, "path": str(target)}

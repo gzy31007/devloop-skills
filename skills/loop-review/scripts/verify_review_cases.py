@@ -3,11 +3,7 @@
 
 from __future__ import annotations
 
-import json
-import pathlib
-import shutil
-import subprocess
-import sys
+import json, pathlib, shutil, subprocess, sys
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 DEVLOOP_OPS = SCRIPTS / "devloop_ops.py"
@@ -94,44 +90,50 @@ def _check_record_guards(work: pathlib.Path, repo: pathlib.Path, sha: str) -> No
 def _check_reject_and_idempotency(work: pathlib.Path, repo: pathlib.Path) -> None:
     body1 = "# 审查打回\nBOM 剥离缺失导致首列错位。\n"
     code, r1 = _ops("review-record", "--cwd", str(repo), "--verdict", "reject", "--category", "method", cwd=repo, stdin_text=body1)
-    assert code == 0 and r1["idempotent"] is False, r1
-    assert r1["reject_count"] == 1 and r1["method_reject_count"] == 1, r1
-    assert _git(repo, "status", "--porcelain").stdout.strip() == "", "worktree dirtied after review-record"
-    assert _ops("review-status", "--cwd", str(repo), cwd=repo)[1]["recommended_next"] == "/loop-build"
+    assert code == 0 and r1["idempotent"] is False and r1["reject_count"] == 1 and r1["method_reject_count"] == 1, r1
+    assert _git(repo, "status", "--porcelain").stdout.strip() == "" and _ops("review-status", "--cwd", str(repo), cwd=repo)[1]["recommended_next"] == "/loop-build"
 
     code, r1_dup = _ops("review-record", "--cwd", str(repo), "--verdict", "reject", "--category", "method", cwd=repo, stdin_text=body1)
-    assert code == 0 and r1_dup["idempotent"] is True, r1_dup
-    assert r1_dup["reject_count"] == 1 and r1_dup["record"]["round"] == 1, r1_dup
+    assert code == 0 and r1_dup["idempotent"] is True and r1_dup["reject_count"] == 1 and r1_dup["record"]["round"] == 1, r1_dup
 
     _write(repo / "app.py", "def run():\n    return 2\n")
-    assert _git(repo, "add", "app.py").returncode == 0
-    assert _git(repo, "commit", "-m", "fix rework").returncode == 0
+    assert _git(repo, "add", "app.py").returncode == 0 and _git(repo, "commit", "-m", "fix rework").returncode == 0
     assert _ops("review-status", "--cwd", str(repo), cwd=repo)[1]["recommended_next"] == "/loop-review"
 
     ext_body = _write(work / "outside-body.md", "# 环境打回\n本地端口被占用。\n")
     code, r2 = _ops("review-record", "--cwd", str(repo), "--verdict", "reject", "--category", "env", "--body-file", str(ext_body), cwd=repo)
-    assert code == 0 and r2["reject_count"] == 2, r2
-    assert r2["env_reject_count"] == 1 and r2["cross_model_recommended"] is True, r2
+    assert code == 0 and r2["reject_count"] == 2 and r2["env_reject_count"] == 1 and r2["cross_model_recommended"] is True, r2
 
 
 def _check_pending_breaker_and_pass(repo: pathlib.Path) -> str:
     code, r3 = _ops("review-record", "--cwd", str(repo), "--verdict", "pending", cwd=repo, stdin_text="# 待人工验证\n请确认移动端表单视口。\n")
-    assert code == 0 and r3["reject_count"] == 2 and r3["record"]["round"] == 3, r3
-    assert r3["pending_count"] == 1, r3
-    st_pending = _ops("review-status", "--cwd", str(repo), cwd=repo)[1]
-    assert st_pending["recommended_next"] == "manual_browser_verify", st_pending
+    assert code == 0 and r3["reject_count"] == 2 and r3["record"]["round"] == 3 and r3["pending_count"] == 1, r3
+    assert r3["record"].get("handoff_sha256") and r3["record"].get("decisions_sha256"), r3
+    assert _ops("review-status", "--cwd", str(repo), cwd=repo)[1]["recommended_next"] == "manual_browser_verify"
+
+    _write(repo / "dirty_pending.txt", "dirty\n")
+    assert _ops("review-status", "--cwd", str(repo), cwd=repo)[1]["recommended_next"] == "/loop-build"
+    (repo / "dirty_pending.txt").unlink()
+    assert _ops("review-status", "--cwd", str(repo), cwd=repo)[1]["recommended_next"] == "manual_browser_verify"
+
+    _write(repo / "app.py", "def run():\n    return 3\n")
+    assert _git(repo, "add", "app.py").returncode == 0 and _git(repo, "commit", "-m", "pending new cand").returncode == 0
+    assert _ops("review-status", "--cwd", str(repo), cwd=repo)[1]["recommended_next"] == "/loop-review"
 
     code, r4 = _ops("review-record", "--cwd", str(repo), "--verdict", "reject", "--category", "method", cwd=repo, stdin_text="# 第3次打回\n边界校验缺失。\n")
     assert code == 0 and r4["reject_count"] == 3 and r4["circuit_breaker_triggered"] is True, r4
-    st_brk = _ops("review-status", "--cwd", str(repo), cwd=repo)[1]
-    assert st_brk["recommended_next"] == "manual_decision", st_brk
+    assert _ops("review-status", "--cwd", str(repo), cwd=repo)[1]["recommended_next"] == "manual_decision"
+    return _check_post_breaker_pending_and_pass(repo)
 
-    code, r5 = _ops("review-record", "--cwd", str(repo), "--verdict", "pass", cwd=repo, stdin_text="# 全绿放行\n全部修复并通过。\n")
-    assert code == 0 and r5["record"]["round"] == 5 and r5["reject_count"] == 3, r5
-    scope_dir = pathlib.Path(r5["record"]["path"]).parent
-    for fname in ("r01-reject.md", "r02-reject.md", "r03-pending.md", "r04-reject.md", "r05-pass.md"):
-        assert (scope_dir / fname).is_file(), f"missing {fname}"
-    return r5["scope_key"]
+
+def _check_post_breaker_pending_and_pass(repo: pathlib.Path) -> str:
+    code, r5 = _ops("review-record", "--cwd", str(repo), "--verdict", "pending", cwd=repo, stdin_text="# 熔断后 pending\n待人工裁决。\n")
+    assert code == 0 and _ops("review-status", "--cwd", str(repo), cwd=repo)[1]["recommended_next"] == "manual_decision", r5
+    code, r6 = _ops("review-record", "--cwd", str(repo), "--verdict", "pass", cwd=repo, stdin_text="# 全绿放行\n全部修复并通过。\n")
+    assert code == 0 and r6["record"]["round"] == 6, r6
+    scope_dir = pathlib.Path(r6["record"]["path"]).parent
+    assert all((scope_dir / n).is_file() for n in ("r01-reject.md", "r02-reject.md", "r03-pending.md", "r04-reject.md", "r05-pending.md", "r06-pass.md"))
+    return r6["scope_key"]
 
 
 def _check_branch_scope_and_worktree(work: pathlib.Path, repo: pathlib.Path, orig_scope: str) -> None:
@@ -146,17 +148,10 @@ def _check_branch_scope_and_worktree(work: pathlib.Path, repo: pathlib.Path, ori
     ext_sha = _setup_repo(ext_repo, "external", "feat/v0.1-ext")
     wt = work / "ext-wt-blind"
     assert _git(ext_repo, "worktree", "add", "--detach", str(wt), ext_sha).returncode == 0
-    code, rep = _ops(
-        "review-record", "--cwd", str(wt), "--state-root", str(ext_repo), "--docs-root", str(ext_repo),
-        "--branch", "feat/v0.1-ext", "--verdict", "pass", cwd=wt, stdin_text="# 客串放行\n隔离 worktree 验收通过。\n",
-    )
+    code, rep = _ops("review-record", "--cwd", str(wt), "--state-root", str(ext_repo), "--docs-root", str(ext_repo), "--branch", "feat/v0.1-ext", "--verdict", "pass", cwd=wt, stdin_text="# 客串放行\n隔离 worktree 验收通过。\n")
     assert code == 0 and pathlib.Path(rep["record"]["path"]).is_relative_to(ext_repo), rep
-    assert _git(wt, "status", "--porcelain").stdout.strip() == "", "wt dirtied"
-    assert _git(ext_repo, "status", "--porcelain").stdout.strip() == "", "main ext repo dirtied"
-    code, gate = _ops(
-        "release-gate", "--cwd", str(wt), "--state-root", str(ext_repo), "--docs-root", str(ext_repo),
-        "--branch", "feat/v0.1-ext", "--phase", "pre-merge", "--tag", "v0.1", "--ports", "none", cwd=wt,
-    )
+    assert _git(wt, "status", "--porcelain").stdout.strip() == "" and _git(ext_repo, "status", "--porcelain").stdout.strip() == ""
+    code, gate = _ops("release-gate", "--cwd", str(wt), "--state-root", str(ext_repo), "--docs-root", str(ext_repo), "--branch", "feat/v0.1-ext", "--phase", "pre-merge", "--tag", "v0.1", "--ports", "none", cwd=wt)
     assert code == 0 and gate["status"] == "PASSED", gate
 
 

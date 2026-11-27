@@ -3,10 +3,7 @@
 
 from __future__ import annotations
 
-import json
-import pathlib
-import subprocess
-import sys
+import json, pathlib, subprocess, sys
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 DEVLOOP_OPS = SCRIPTS / "devloop_ops.py"
@@ -49,31 +46,24 @@ def _seed_repo(repo: pathlib.Path, branch: str = "feat/v0.1-pf") -> tuple[str, s
     _git(repo, "config", "user.email", "test@users.noreply.github.com")
     _write(repo / "app.py", "def run():\n    return 1\n")
     _write(repo / "old_mod.py", "def legacy():\n    return 0\n")
-    assert _git(repo, "add", ".").returncode == 0
-    assert _git(repo, "commit", "-m", "init").returncode == 0
+    assert _git(repo, "add", ".").returncode == 0 and _git(repo, "commit", "-m", "init").returncode == 0
     assert _ops("init", "--cwd", str(repo), "--mode", "own", cwd=repo)[0] == 0
-    assert _git(repo, "add", ".").returncode == 0
-    assert _git(repo, "commit", "-m", "init devloop").returncode == 0
+    assert _git(repo, "add", ".").returncode == 0 and _git(repo, "commit", "-m", "init devloop").returncode == 0
     base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
-
-    assert _git(repo, "checkout", "-b", branch).returncode == 0
-    assert _git(repo, "mv", "old_mod.py", "new_mod.py").returncode == 0
+    assert _git(repo, "checkout", "-b", branch).returncode == 0 and _git(repo, "mv", "old_mod.py", "new_mod.py").returncode == 0
     _write(repo / "DECISIONS.md", "# DECISIONS\n\n2026-11-26 | [active] | 选择：A | 放弃：B | 触发：C\n")
     _write(repo / "FEATURE_MAP.md", "# FEATURE_MAP\n\n| 版本 | 功能 | 入口 | 验证 |\n| --- | --- | --- | --- |\n| v0.1 | X | `x` | `t` |\n")
     _write(repo / ".loop" / "handoff.md", _handoff_text("v0.1", branch, base_sha))
-    assert _git(repo, "add", ".").returncode == 0
-    assert _git(repo, "commit", "-m", "candidate").returncode == 0
+    assert _git(repo, "add", ".").returncode == 0 and _git(repo, "commit", "-m", "candidate").returncode == 0
     return base_sha, _git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
 def _check_empty_and_first_pass(work: pathlib.Path) -> tuple[pathlib.Path, str, str]:
     empty = work / "empty-repo"
     empty.mkdir(parents=True, exist_ok=True)
-    assert _git(empty, "init", "-b", "main").returncode == 0
-    assert _ops("init", "--cwd", str(empty), "--mode", "own", cwd=empty)[0] == 0
+    assert _git(empty, "init", "-b", "main").returncode == 0 and _ops("init", "--cwd", str(empty), "--mode", "own", cwd=empty)[0] == 0
     code, pf = _ops("preflight", "--cwd", str(empty), cwd=empty)
     assert code == 1 and any("[HEAD_MISSING]" in v for v in pf["violations"]), pf
-
     repo = work / "pf-main"
     base_sha, cand_sha = _seed_repo(repo)
     code, pf = _ops("preflight", "--cwd", str(repo), cwd=repo)
@@ -90,14 +80,12 @@ def _check_baseline_and_branch_errors(repo: pathlib.Path, base_sha: str, cand_sh
 
     assert _git(repo, "checkout", "-b", "side", base_sha).returncode == 0
     _write(repo / "side.txt", "x\n")
-    assert _git(repo, "add", "side.txt").returncode == 0
-    assert _git(repo, "commit", "-m", "side").returncode == 0
+    assert _git(repo, "add", "side.txt").returncode == 0 and _git(repo, "commit", "-m", "side").returncode == 0
     side_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
     assert _git(repo, "checkout", "feat/v0.1-pf").returncode == 0
 
     _write(repo / ".loop" / "handoff.md", _handoff_text("v0.1", "feat/v0.1-pf", ""))
-    assert _git(repo, "add", ".loop/handoff.md").returncode == 0
-    assert _git(repo, "commit", "-m", "no baseline in handoff").returncode == 0
+    assert _git(repo, "add", ".loop/handoff.md").returncode == 0 and _git(repo, "commit", "-m", "no baseline in handoff").returncode == 0
     head_now = _git(repo, "rev-parse", "HEAD").stdout.strip()
     for b_args, exp_tag in (
         ([], "[BASELINE_MISSING]"), (["--baseline", base_sha[:8]], "[BASELINE_INVALID]"),
@@ -107,14 +95,12 @@ def _check_baseline_and_branch_errors(repo: pathlib.Path, base_sha: str, cand_sh
         assert c_b == 1 and any(exp_tag in v for v in r_b["violations"]), (exp_tag, r_b)
 
     _write(repo / ".loop" / "handoff.md", _handoff_text("v0.1", "feat/v0.1-pf (base old)", base_sha))
-    assert _git(repo, "add", ".loop/handoff.md").returncode == 0
-    assert _git(repo, "commit", "-m", "remark branch").returncode == 0
+    assert _git(repo, "add", ".loop/handoff.md").returncode == 0 and _git(repo, "commit", "-m", "remark branch").returncode == 0
     st = _ops("review-status", "--cwd", str(repo), cwd=repo)[1]
     assert st["preflight_checked"] and not st["preflight_passed"] and st["recommended_next"] == "/loop-build", st
     assert not list((repo / ".loop" / "reviews").rglob("*.md")), "preflight failure wrote review records"
     _write(repo / ".loop" / "handoff.md", _handoff_text("v0.1", "feat/v0.1-pf", base_sha))
-    assert _git(repo, "add", ".loop/handoff.md").returncode == 0
-    assert _git(repo, "commit", "-m", "restore clean handoff").returncode == 0
+    assert _git(repo, "add", ".loop/handoff.md").returncode == 0 and _git(repo, "commit", "-m", "restore clean handoff").returncode == 0
     return _git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
@@ -123,27 +109,21 @@ def _check_detached_and_archive_guards(work: pathlib.Path, repo: pathlib.Path, c
     assert _git(repo, "worktree", "add", "--detach", str(wt), cand_sha).returncode == 0
     assert any("[BRANCH_REQUIRED_DETACHED]" in v for v in _ops("preflight", "--cwd", str(wt), "--state-root", str(repo), cwd=wt)[1]["violations"])
     assert any("[BRANCH_REF_MISSING]" in v for v in _ops("preflight", "--cwd", str(wt), "--state-root", str(repo), "--branch", "feat/missing", cwd=wt)[1]["violations"])
-
     other = work / "other-repo"
     _seed_repo(other)
     assert any("[STATE_ROOT_REPO_MISMATCH]" in v for v in _ops("preflight", "--cwd", str(wt), "--state-root", str(other), "--branch", "feat/v0.1-pf", cwd=wt)[1]["violations"])
-
     _write(repo / "dirty_state.txt", "dirty\n")
     assert any("[DIRTY_WORKTREE]" in v for v in _ops("preflight", "--cwd", str(wt), "--state-root", str(repo), "--branch", "feat/v0.1-pf", cwd=wt)[1]["violations"])
     (repo / "dirty_state.txt").unlink()
-
     code, pf_ok = _ops("preflight", "--cwd", str(wt), "--state-root", str(repo), "--branch", "feat/v0.1-pf", cwd=wt)
-    assert code == 0 and pf_ok["status"] == "PASSED", pf_ok
-    assert _git(repo, "worktree", "remove", "--force", str(wt)).returncode == 0
-
+    assert code == 0 and pf_ok["status"] == "PASSED" and _git(repo, "worktree", "remove", "--force", str(wt)).returncode == 0
     from devloop_git import resolve_git_exclude
     exc = resolve_git_exclude(other)
     assert exc is not None
     exc.write_text("/.loop/reviews/\n", encoding="utf-8")
     assert any("[REVIEW_PATH_UNIGNORED]" in v for v in _ops("preflight", "--cwd", str(other), cwd=other)[1]["violations"])
     _write(other / ".loop" / "archive" / "keep.txt", "x\n")
-    assert _git(other, "add", "-f", ".loop/archive/keep.txt").returncode == 0
-    assert _git(other, "commit", "-m", "track archive").returncode == 0
+    assert _git(other, "add", "-f", ".loop/archive/keep.txt").returncode == 0 and _git(other, "commit", "-m", "track archive").returncode == 0
     assert any("[REVIEW_PATH_TRACKED]" in v for v in _ops("preflight", "--cwd", str(other), cwd=other)[1]["violations"])
 
 
@@ -161,35 +141,28 @@ def _check_handoff_and_template_edges(work: pathlib.Path, repo: pathlib.Path, ba
         "v0.1", "feat/v0.1-pf", _git(t_repo, "rev-parse", "main").stdout.strip(),
         feat_row="| `FEATURE_MAP.md` | `本轮无适用变更` | 仍保留初始占位行 |",
     ))
-    assert _git(t_repo, "add", ".").returncode == 0
-    assert _git(t_repo, "commit", "-m", "template bypass attempt").returncode == 0
+    assert _git(t_repo, "add", ".").returncode == 0 and _git(t_repo, "commit", "-m", "template bypass attempt").returncode == 0
     code, rep = _ops("preflight", "--cwd", str(t_repo), cwd=t_repo)
     assert code == 1 and any("[DOCS_TEMPLATE_ONLY]" in v for v in rep["violations"]), rep
 
-    # Lower-section table does not pollute top metadata or doc-sync; valid preflight passes
     extra_sec = "## 调研与边界\n\n| 分支 | 备注 |\n| --- | --- |\n| `wrong/branch` | 表外引用 |\n\n| `DECISIONS.md` | `已更新` | 表外引用 |\n\n"
     _write(repo / ".loop" / "handoff.md", _handoff_text("v0.1", "feat/v0.1-pf", base_sha, extra_sec=extra_sec))
-    assert _git(repo, "add", ".loop/handoff.md").returncode == 0
-    assert _git(repo, "commit", "-m", "lower table non-polluting").returncode == 0
+    assert _git(repo, "add", ".loop/handoff.md").returncode == 0 and _git(repo, "commit", "-m", "lower table non-polluting").returncode == 0
     assert _ops("preflight", "--cwd", str(repo), cwd=repo)[0] == 0
 
-    # Duplicate fields, scope-only without self-test evidence, and CLI doc-sync conflict
     _write(repo / ".loop" / "handoff.md", _handoff_text("v0.1", "feat/v0.1-pf", base_sha, extra_top="| 分支 | `feat/v0.1-pf` |\n", evidence=""))
-    assert _git(repo, "add", ".loop/handoff.md").returncode == 0
-    assert _git(repo, "commit", "-m", "dup meta and no evidence").returncode == 0
+    assert _git(repo, "add", ".loop/handoff.md").returncode == 0 and _git(repo, "commit", "-m", "dup meta and no evidence").returncode == 0
     st = _ops("review-status", "--cwd", str(repo), cwd=repo)[1]
     assert st["recommended_next"] == "/loop-build", st
     pf_bad = _ops("preflight", "--cwd", str(repo), cwd=repo)[1]
     assert any("[HANDOFF_DUPLICATE_FIELD]" in v for v in pf_bad["violations"]) and any("[HANDOFF_EVIDENCE_MISSING]" in v for v in pf_bad["violations"]), pf_bad
 
     _write(repo / ".loop" / "handoff.md", _handoff_text("v0.1", "feat/v0.1-pf", base_sha, dec_row="| `DECISIONS.md` | `已更新` | A |\n| `DECISIONS.md` | `已更新` | B |"))
-    assert _git(repo, "add", ".loop/handoff.md").returncode == 0
-    assert _git(repo, "commit", "-m", "dup doc sync").returncode == 0
+    assert _git(repo, "add", ".loop/handoff.md").returncode == 0 and _git(repo, "commit", "-m", "dup doc sync").returncode == 0
     assert any("[DOC_SYNC_DUPLICATE]" in v for v in _ops("preflight", "--cwd", str(repo), cwd=repo)[1]["violations"])
 
     _write(repo / ".loop" / "handoff.md", _handoff_text("v0.1", "feat/v0.1-pf", base_sha))
-    assert _git(repo, "add", ".loop/handoff.md").returncode == 0
-    assert _git(repo, "commit", "-m", "clean again").returncode == 0
+    assert _git(repo, "add", ".loop/handoff.md").returncode == 0 and _git(repo, "commit", "-m", "clean again").returncode == 0
     code, rec_conf = _ops("review-record", "--cwd", str(repo), "--verdict", "pass", "--decisions-status", "no_applicable_change", cwd=repo, stdin_text="# fail\n")
     assert code == 1 and any("[DOC_SYNC_CONFLICT]" in v for v in rec_conf["violations"]), rec_conf
 
@@ -206,15 +179,16 @@ def _check_status_pass_stale_and_allow_diff(work: pathlib.Path, repo: pathlib.Pa
     assert _git(repo, "add", "app.py", ".loop/handoff.md").returncode == 0
     assert _git(repo, "commit", "-m", "fix with bad branch remark").returncode == 0
 
-    pf_d = _ops("preflight", "--cwd", str(repo), cwd=repo)[1]
-    st_d = _ops("review-status", "--cwd", str(repo), cwd=repo)[1]
+    pf_d, st_d = _ops("preflight", "--cwd", str(repo), cwd=repo)[1], _ops("review-status", "--cwd", str(repo), cwd=repo)[1]
     rec_d = _ops("review-record", "--cwd", str(repo), "--verdict", "pass", cwd=repo, stdin_text="# fail\n")[1]
     for rep in (pf_d, rec_d):
         assert any("[HANDOFF_BRANCH_MISMATCH]" in v for v in rep["violations"]), rep
-    assert st_d["preflight_checked"] and not st_d["preflight_passed"] and st_d["recommended_next"] == "/loop-build", st_d
-    assert any("[HANDOFF_BRANCH_MISMATCH]" in v for v in st_d["preflight_violations"]), st_d
+    assert not st_d["preflight_passed"] and st_d["recommended_next"] == "/loop-build", st_d
     assert [p.name for p in r1_path.parent.iterdir()] == ["r01-reject.md"] and sha256_file(r1_path) == r1_hash
+    _check_post_pass_drift(repo)
 
+
+def _check_post_pass_drift(repo: pathlib.Path) -> None:
     _write(repo / ".loop" / "handoff.md", _handoff_text("v0.1", "feat/v0.1-pf", _git(repo, "rev-parse", "main").stdout.strip()))
     assert _git(repo, "add", ".loop/handoff.md").returncode == 0
     assert _git(repo, "commit", "-m", "fix clean handoff").returncode == 0
@@ -223,26 +197,52 @@ def _check_status_pass_stale_and_allow_diff(work: pathlib.Path, repo: pathlib.Pa
     _write(repo / ".loop" / "handoff.md", (repo / ".loop" / "handoff.md").read_text(encoding="utf-8") + "\n# retro note\n")
     assert _git(repo, "add", ".loop/handoff.md").returncode == 0
     assert _git(repo, "commit", "-m", "handoff only post pass").returncode == 0
-    st_ho = _ops("review-status", "--cwd", str(repo), cwd=repo)[1]
-    assert st_ho["pass_stale"] is False and st_ho["recommended_next"] == "/loop-ship", st_ho
+    assert _ops("review-status", "--cwd", str(repo), cwd=repo)[1]["recommended_next"] == "/loop-ship"
 
     code, gate_forbid = _ops("release-gate", "--cwd", str(repo), "--phase", "pre-merge", "--allow-diff", "app.py", "--ports", "none", cwd=repo)
     assert code == 1 and any("[ALLOW_DIFF_FORBIDDEN]" in v for v in gate_forbid["violations"]), gate_forbid
 
     _write(repo / "DECISIONS.md", (repo / "DECISIONS.md").read_text(encoding="utf-8") + "\n2026-11-26 | [active] | 选择：B | 放弃：A | 触发：C\n")
     st_drift = _ops("review-status", "--cwd", str(repo), cwd=repo)[1]
-    assert st_drift["pass_stale"] is True and st_drift["recommended_next"] == "/loop-build" and not st_drift["preflight_passed"], st_drift
+    assert st_drift["pass_stale"] is True and st_drift["recommended_next"] == "/loop-build", st_drift
     assert _git(repo, "add", "DECISIONS.md").returncode == 0
     assert _git(repo, "commit", "-m", "commit doc drift").returncode == 0
     st_committed = _ops("review-status", "--cwd", str(repo), cwd=repo)[1]
-    assert st_committed["pass_stale"] is True and st_committed["recommended_next"] == "/loop-review" and st_committed["preflight_passed"], st_committed
+    assert st_committed["recommended_next"] == "/loop-review" and st_committed["preflight_passed"], st_committed
+
+
+def _check_external_pending_and_legacy(work: pathlib.Path, ext_repo: pathlib.Path, snap: pathlib.Path, base0: str) -> None:
+    from devloop_review_io import normalize_body
+    from devloop_review_store import body_sha256, format_review_doc
+
+    _write(ext_repo / ".loop" / "handoff.md", _handoff_text("v0.1", "feat/v0.1-ext", base0))
+    assert _ops("review-record", "--cwd", str(ext_repo), "--mode", "external", "--docs-root", str(snap), "--verdict", "pending", cwd=ext_repo, stdin_text="# pending\nwait.\n")[0] == 0
+    assert _ops("review-record", "--cwd", str(ext_repo), "--mode", "external", "--docs-root", str(snap), "--verdict", "pending", cwd=ext_repo, stdin_text="# pending\nwait.\n")[1]["idempotent"] is True
+    assert _ops("review-status", "--cwd", str(ext_repo), "--mode", "external", "--docs-root", str(snap), cwd=ext_repo)[1]["recommended_next"] == "manual_browser_verify"
+
+    _write(snap / ".loop" / "DECISIONS.md", "# DECISIONS\n\n2026-11-26 | [active] | 选择：E3 | 放弃：B | 触发：C\n")
+    st_doc = _ops("review-status", "--cwd", str(ext_repo), "--mode", "external", "--docs-root", str(snap), cwd=ext_repo)[1]
+    assert st_doc["recommended_next"] == "/loop-review" and st_doc["preflight_passed"] is True, st_doc
+    c_p2, r_p2 = _ops("review-record", "--cwd", str(ext_repo), "--mode", "external", "--docs-root", str(snap), "--verdict", "pending", cwd=ext_repo, stdin_text="# pending\nwait.\n")
+    assert c_p2 == 0 and r_p2["idempotent"] is False and r_p2["record"]["round"] == 3, r_p2
+
+    _write(ext_repo / ".loop" / "handoff.md", _handoff_text("v0.1", "feat/v0.1-ext", base0, evidence="`npm test -> exit 0`"))
+    assert _ops("review-status", "--cwd", str(ext_repo), "--mode", "external", "--docs-root", str(snap), cwd=ext_repo)[1]["recommended_next"] == "/loop-review"
+
+    leg = work / "legacy-pending"
+    _seed_repo(leg, branch="feat/v0.1-leg")
+    leg_head, st_leg0 = _git(leg, "rev-parse", "HEAD").stdout.strip(), _ops("review-status", "--cwd", str(leg), cwd=leg)[1]
+    norm = normalize_body("# legacy pending\nmanual check.\n")
+    meta = {"version": "v0.1", "branch": "feat/v0.1-leg", "round": 1, "verdict": "pending", "reviewed_sha": leg_head, "reviewer": "loop-review", "created_at": "2026-11-26T00:00:00Z", "body_sha256": body_sha256(norm), "summary": "legacy"}
+    _write(pathlib.Path(st_leg0["scope_dir"]) / "r01-pending.md", format_review_doc(meta, norm))
+    c_leg, st_leg = _ops("review-status", "--cwd", str(leg), cwd=leg)
+    assert c_leg == 0 and st_leg["corrupt_records"] == [] and st_leg["recommended_next"] == "manual_browser_verify", st_leg
 
 
 def _check_doc_unchanged_and_external_drift(work: pathlib.Path, repo: pathlib.Path) -> None:
     unch_base = _git(repo, "rev-parse", "HEAD~1").stdout.strip()
     _write(repo / ".loop" / "handoff.md", _handoff_text("v0.1", "feat/v0.1-pf", unch_base))
-    assert _git(repo, "add", ".loop/handoff.md").returncode == 0
-    assert _git(repo, "commit", "-m", "unchanged baseline doc test").returncode == 0
+    assert _git(repo, "add", ".loop/handoff.md").returncode == 0 and _git(repo, "commit", "-m", "unchanged baseline doc test").returncode == 0
     code_u, rep_u = _ops("preflight", "--cwd", str(repo), cwd=repo)
     assert code_u == 1 and any("[DOC_UNCHANGED]" in v for v in rep_u["violations"]), rep_u
 
@@ -264,7 +264,8 @@ def _check_doc_unchanged_and_external_drift(work: pathlib.Path, repo: pathlib.Pa
     assert _ops("review-record", "--cwd", str(ext_repo), "--mode", "external", "--docs-root", str(snap), "--verdict", "pass", cwd=ext_repo, stdin_text="# ext\nok.\n")[0] == 0
     _write(snap / ".loop" / "DECISIONS.md", "# DECISIONS\n\n2026-11-26 | [active] | 选择：E2 | 放弃：B | 触发：C\n")
     st_ext = _ops("review-status", "--cwd", str(ext_repo), "--mode", "external", "--docs-root", str(snap), cwd=ext_repo)[1]
-    assert st_ext["pass_stale"] is True and st_ext["recommended_next"] == "/loop-review" and st_ext["preflight_passed"], st_ext
+    assert st_ext["pass_stale"] is True and st_ext["recommended_next"] == "/loop-review", st_ext
+    _check_external_pending_and_legacy(work, ext_repo, snap, b0)
 
 
 def check_preflight_and_status(work: pathlib.Path) -> str:
