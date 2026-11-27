@@ -39,6 +39,7 @@ description: 先调研再收敛计划：对新想法或陌生技术栈做只读�
 | --- | --- |
 | `FEATURE_MAP.md`（客串在 `.loop/`） | 新项目按 `references/feature_map.template.md` 写 4 列（`版本 \| 功能 \| 入口 \| 验证`）；既有 3 列旧表沿用兼容 |
 | `DECISIONS.md`（客串在 `.loop/`） | 按 `YYYY-MM-DD \| [active] \| 选择与理由（含失败语义、并发边界与本版局限） \| 放弃 \| 推翻触发条件` 追加；失效前提标记 `[superseded by ...]` |
+| `CODING_STANDARDS.md`（可选，客串在 `.loop/`） | 仓库存在本文件时，规划期在 `DECISIONS.md` 与 `.loop/handoff.md` 契约摘要锁定本轮适用条款与阻断级别 |
 | `.loop/handoff.md` | 编码前锁定本轮完整 `基线 SHA`（`git rev-parse HEAD`）与 `契约与边界摘要`，写入验收目标与待验假设 |
 
 文档与交接基线锁定后进入 `/loop-build`。

@@ -1,44 +1,67 @@
 ---
 name: loop-retro
-description: 审查全绿后执行两阶段发版门禁、合主干打标签、标签复核、读取全部打回原件分层沉淀教训并原子归档审查目录。审查放行后使用。
+description: Matt 式 Agent 工作环境复盘与归档收尾：读取指定作用域证据、git 提交、会话摩擦与抽检意见，按四组七维诊断索引输出高低优先级提案，受控落地后原子归档。发版后或排障/单次审查时独立使用。
 ---
 
-# loop-retro · 发版闸门、复盘与归档
+# loop-retro · Agent 工作环境复盘与归档收尾
 
-仅在 `devloop_ops.py review-status` 返回 `latest_verdict == "pass"` 且 `pass_stale == false` 时执行。脚本优先从已加载的 `loop-review` 技能目录拼接 `scripts/<脚本名>`，CI 与夹具优先读取 `DEVLOOP_KIT`。
+聚焦改进后续编码与审查所依赖的工作环境。主流程紧接 `/loop-ship` 运行；排障、单次审查或客串模式下亦可随时独立触发。脚本优先从已加载的 `loop-review` 技能目录拼接 `scripts/<脚本名>`，CI 与夹具优先读取 `DEVLOOP_KIT`。
 
-## 一、固定发版顺序与两阶段门禁
+## 一、加载规范与四路一手输入
 
-受跟踪的 `.loop/handoff.md` 为 `pre-merge` 审查后差异唯一白名单；清单版本（`package.json` / `pyproject.toml`）与 `DECISIONS.md`、`FEATURE_MAP.md` 须在审查前随候选提交锁定，最终 `release_sha` 记录在提交之外的发版日志或宿主 `telemetry_log`。
+编写任何提案、文档或测试标题前先加载并遵循 `agent-docs` 规范。收集以下四路一手输入，禁止拿无关历史归档顶替当前作用域证据：
 
-| 步骤 | 动作与命令 | 核验目标 |
+| 一手输入 | 读取目标与命令 | 核查重点 |
 | --- | --- | --- |
-| 1. 复核与提交交接 | 核对版本标签、`.loop/handoff.md` 与当前提交树一致；如需补充发版前复盘摘要仅修改 `.loop/handoff.md` 并提交 | 工作树干净，未改源码、清单与两份文档 |
-| 2. 合前门禁（`pre-merge`） | `python <loop-review-dir>/scripts/devloop_ops.py release-gate --cwd . --phase pre-merge --tag vX.Y --json` | 工作树干净、无 `.tmp/`、端口空闲、当前作用域最新裁决为 `pass`、差异仅含 `.loop/handoff.md`、版本与文档指纹全匹配 |
-| 3. 合主干与打标签 | 切回 `main` 后优先快进合并；若无法快进则完成合并并在合并树重跑测试与 `arch_gate.py --json .` 通过后再执行 `git tag -a vX.Y -m "release vX.Y"` | 主干推进到合并后最新提交，合并树验证通过再打标签 |
-| 4. 标后复核（`post-tag`） | `python <loop-review-dir>/scripts/devloop_ops.py release-gate --cwd . --phase post-tag --tag vX.Y --branch main --json` | 标签存在、解引用提交与当前主干 `HEAD` 一致且工作树干净 |
-| 5. 读取打回与归档 | 读取 `.loop/reviews/<scope-key>/` 下全部 `rNN-reject.md` 原件按分层沉淀表落盘，随后执行 `python <loop-review-dir>/scripts/devloop_ops.py review-archive --cwd . --tag vX.Y --json` | 教训落盘；无论打回 0 次或多次，整目录原子移入 `.loop/archive/<scope-key>/` |
-| 6. 发版记录与推送 | 在提交之外的发版日志记录 `release_sha` 与回滚命令；若配置或宿主声明 `telemetry_log`，追加标准 `released` JSONL 事件；对外推送须遵守用户明确授权 | 遥测与回滚依据完整 |
+| 审查与交接记录 | 显式读取指定 `.loop/reviews/<scope-key>/`（或明确指定要复盘的归档作用域）与 `.loop/handoff.md` | 打回根因（`method`/`env`）、第 6 节 P2/P3、漏接项与 `.ship.json` 绑定 |
+| 提交历史 | `git log --oneline -n 20` 及本轮基线至当前范围提交 | 返工震荡热点、跨文件联动漏改、重复修补 |
+| 会话摩擦记录 | 当前或指定会话中的报错、工具超时、重跑与卡点 | 缺寻路入口、隐性前置条件、环境噪音与无效回环 |
+| 发版抽检意见 | `/loop-ship` 人工抽检反馈、PR 评审意见或人工介入记录 | 标准预期差、文档表达盲区与可回滚风险 |
 
-`telemetry_log` 标准 `released` JSONL 字段：`{"event":"released","tag":"vX.Y","reviewed_sha":"...","release_sha":"...","mode":"own","retro_path":"..."}`。
+按上述证据按需查阅仓库 lint/hook/CI 配置、`AGENTS.md`、可选 `CODING_STANDARDS.md`（客串模式 `.loop/CODING_STANDARDS.md`）、`DECISIONS.md` 与 `.loop/config.json`。
 
-## 二、分层沉淀复盘教训
+## 二、四组七维环境诊断索引
 
-按固定优先级沉淀本轮 `.loop/reviews/<scope-key>/` 中全部打回原件与遗留风险，项目特化规则留在本仓库 `DECISIONS.md` / `AGENTS.md`，跨项目通用模式才回流套件共用清单或门禁脚本：
+仅围绕手头真实证据展开，禁止逐项空扫套模板；同一根因只定一处精准落点，防止规则多处复制：
 
-| 优先级 | 落点 | 适用情形 |
+| 诊断维度 | 常见信号 | 精准落点方向 |
 | --- | --- | --- |
-| 1 | 门禁脚本（`arch_gate.py`、`devloop_ops.py`、`verify_scripts.py`） | 可机械检查并拦截的跨项目结构、路径、配置或流程错误 |
-| 2 | 本项目测试与本仓库文档（`DECISIONS.md`、`FEATURE_MAP.md`、`AGENTS.md`） | 单项目专属运行时回归、领域不变量与项目特化工程约定 |
-| 3 | 套件共用清单与技能（`review-checklist.md`、`loop-build`、`loop-review`、`loop-retro`） | 跨项目通性编码防错、写审同源核对项或流程改进 |
+| 导航与指令卫生 | 代理找不到入口、重复查目录、`AGENTS.md` 冗长含无效或过期指令 | 补充精简寻路指针、瘦身并清理失效指令 |
+| 自动化门禁与漏接 | 同类格式/静态/路径/端口违规反复靠人工或审查捕获；回归与属性测试缺口 | 机械违规转确定性检查（`arch_gate`/lint/hook），补最小真实回归与脏输入属性用例 |
+| 审查标准与写审分流 | 写审对主观风格、降级边界或阻断级别产生临时分歧 | 项目特有主观约定写入 `CODING_STANDARDS.md` 或 `DECISIONS.md`；跨项目通性问题才归入套件建议 |
+| 工具经济性与运行期可达性 | 命令反复超时、本地日志或端口状态不可观察导致盲猜 | 补充只读状态命令、清晰错误码或 `reap_and_run.py` 托管脚本入口 |
 
-同步核对 `DECISIONS.md` 现行前提：前提变化则重写条目并将被取代条目标记 `[superseded by YYYY-MM-DD 新摘要]`。
+## 三、分级提案输出与双轨分流
 
-## 三、清理现场
+按高、中、低严重度输出结构化提案表，并严格区分项目内改造与套件反哺：
 
-删除临时目录与测试 worktree，校验端口、工作树与待归档队列均为空：
+| 输出字段 | 必须包含内容 |
+| --- | --- |
+| 严重度与标题 | `高` / `中` / `低` 及一句话根因概括 |
+| 一手证据 | 具体文件名、提交 SHA、打回轮次或会话报错摘要 |
+| 所属轨道 | 「本项目环境改动」或「跨项目 `devloop` 套件反哺建议」 |
+| 精准落点与改动内容 | 目标文件路径与具体增删改方案 |
+
+处于业务项目仓库时，「跨项目 `devloop` 套件反哺建议」仅在本报告输出结构化建议块，严禁直接改动全局已安装技能缓存（`~/.agents/skills/`、`~/.opencode/skills/` 等）。
+
+## 四、受控落地与归档收尾
+
+| 运行模式 | 环境改动权限 | 归档前提交要求 |
+| --- | --- | --- |
+| 交互模式 | 展示提案表后等待用户勾选；仅实施选中项并跑通对应验证；零选中则跳过改动 | 存在实际改动时提交独立 `chore(retro): ...`，记录最新提交作为 `--retro-head` |
+| 非交互无人值守模式 | 仅将完整提案报告写入指定日志或标准输出，对仓库源码、配置与文档零改动 | 直接按当前清洁 `HEAD` 进入归档校验 |
+
+仅当存在已完成发版或 PR 交接的活跃作用域（或用户明确确认以 `--close-reason abandoned` 中止未发版作用域）时，才调用 `review-archive`；平时排障或无活跃作用域独立复盘时跳过归档。若主干产生 `chore(retro)` 新提交，归档必须传入 `--retro-head`：
 
 ```bash
+# 1. 有 retro 提交推进 HEAD 时传 --retro-head；未推进且为 own 标签发版可传 --tag
+python <loop-review-dir>/scripts/devloop_ops.py review-archive --cwd . --version vX.Y --branch <branch> --retro-head <cur_head> --json
+python <loop-review-dir>/scripts/devloop_ops.py review-archive --cwd . --tag vX.Y --json
+
+# 2. 用户明确中止未发版作用域
+python <loop-review-dir>/scripts/devloop_ops.py review-archive --cwd . --version vX.Y --branch <branch> --close-reason abandoned --json
+
+# 3. 终态核验：端口空闲、路由更新、工作树干净
 python <loop-review-dir>/scripts/reap_and_run.py --status --json
 python <loop-review-dir>/scripts/devloop_ops.py review-status --cwd . --json
 git status --porcelain

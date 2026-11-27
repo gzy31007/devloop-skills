@@ -224,7 +224,7 @@ def _check_status_pass_stale_and_allow_diff(work: pathlib.Path, repo: pathlib.Pa
     assert _git(repo, "add", ".loop/handoff.md").returncode == 0
     assert _git(repo, "commit", "-m", "handoff only post pass").returncode == 0
     st_ho = _ops("review-status", "--cwd", str(repo), cwd=repo)[1]
-    assert st_ho["pass_stale"] is False and st_ho["recommended_next"] == "/loop-retro", st_ho
+    assert st_ho["pass_stale"] is False and st_ho["recommended_next"] == "/loop-ship", st_ho
 
     code, gate_forbid = _ops("release-gate", "--cwd", str(repo), "--phase", "pre-merge", "--allow-diff", "app.py", "--ports", "none", cwd=repo)
     assert code == 1 and any("[ALLOW_DIFF_FORBIDDEN]" in v for v in gate_forbid["violations"]), gate_forbid

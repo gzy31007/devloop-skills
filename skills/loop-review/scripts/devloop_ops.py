@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified CLI for devloop kit discovery, idempotent init, review records, and release gates."""
+"""Unified CLI for devloop kit discovery, idempotent init, review records, ship receipts, and gates."""
 
 from __future__ import annotations
 
@@ -20,13 +20,11 @@ from devloop_git import configure_stdio, is_valid_kit
 from devloop_init import run_init
 from devloop_preflight import run_preflight
 from devloop_reviews import run_review_record
+from devloop_ship import run_ship_record
 from devloop_status import run_review_status
 
 LOCAL_SKILL_DIRS = (".opencode/skills", ".agents/skills", ".claude/skills", "skills", "kits/devloop/skills")
-GLOBAL_SKILL_DIRS = (
-    ".agents/skills", ".config/opencode/skills", ".claude/skills",
-    ".codex/skills", ".opencode/skills",
-)
+GLOBAL_SKILL_DIRS = (".agents/skills", ".config/opencode/skills", ".claude/skills", ".codex/skills", ".opencode/skills")
 
 
 def resolve_kit(cwd: pathlib.Path) -> tuple[pathlib.Path | None, str]:
@@ -57,8 +55,7 @@ def _emit(payload: dict, as_json: bool) -> None:
     if as_json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
-    status = payload.get("status", "OK")
-    print(f"{status}: {json.dumps(payload, ensure_ascii=False)}")
+    print(f"{payload.get('status', 'OK')}: {json.dumps(payload, ensure_ascii=False)}")
 
 
 def _cmd_resolve_kit(args: argparse.Namespace) -> int:
@@ -66,24 +63,12 @@ def _cmd_resolve_kit(args: argparse.Namespace) -> int:
     if kit is None:
         _emit({"status": "FAILED", "error": "devloop kit unavailable", "source": source}, args.json)
         return 1
-    payload = {
-        "status": "PASSED",
-        "kit_root": str(kit),
-        "scripts_dir": str(kit / "loop-review" / "scripts"),
-        "source": source,
-    }
-    _emit(payload, args.json)
+    _emit({"status": "PASSED", "kit_root": str(kit), "scripts_dir": str(kit / "loop-review" / "scripts"), "source": source}, args.json)
     return 0
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
-    code, payload = run_init(
-        pathlib.Path(args.cwd),
-        mode=args.mode,
-        languages=args.languages,
-        switch_mode=args.switch_mode,
-        migrate_shadow=args.migrate_shadow,
-    )
+    code, payload = run_init(pathlib.Path(args.cwd), mode=args.mode, languages=args.languages, switch_mode=args.switch_mode, migrate_shadow=args.migrate_shadow)
     _emit(payload, args.json)
     return code
 
@@ -130,10 +115,21 @@ def _cmd_review_status(args: argparse.Namespace) -> int:
     return code
 
 
+def _cmd_ship_record(args: argparse.Namespace) -> int:
+    code, payload = run_ship_record(
+        pathlib.Path(args.cwd), state_root=args.state_root, docs_root=args.docs_root,
+        mode=args.mode, version=args.version, branch=args.branch,
+        reviewed_sha=args.reviewed_sha, tag=args.tag,
+        target_branch=args.target_branch, push_status=args.push_status,
+    )
+    _emit(payload, args.json)
+    return code
+
+
 def _cmd_review_archive(args: argparse.Namespace) -> int:
     code, payload = run_review_archive(
-        pathlib.Path(args.cwd), state_root_arg=args.state_root,
-        tag=args.tag, version=args.version, branch=args.branch,
+        pathlib.Path(args.cwd), state_root_arg=args.state_root, tag=args.tag,
+        version=args.version, branch=args.branch, retro_head=args.retro_head, close_reason=args.close_reason,
     )
     _emit(payload, args.json)
     return code
@@ -141,64 +137,48 @@ def _cmd_review_archive(args: argparse.Namespace) -> int:
 
 def _cmd_release_gate(args: argparse.Namespace) -> int:
     code, payload = run_release_gate(
-        pathlib.Path(args.cwd), phase=args.phase, mode=args.mode,
-        tag=args.tag, version=args.version, branch=args.branch,
-        reviewed_sha=args.reviewed_sha, state_root=args.state_root,
-        docs_root=args.docs_root, ports=args.ports, allow_diff=args.allow_diff,
+        pathlib.Path(args.cwd), phase=args.phase, mode=args.mode, tag=args.tag,
+        version=args.version, branch=args.branch, reviewed_sha=args.reviewed_sha,
+        state_root=args.state_root, docs_root=args.docs_root, ports=args.ports, allow_diff=args.allow_diff,
     )
     _emit(payload, args.json)
     return code
 
 
+def _add_str_args(parser: argparse.ArgumentParser, names: tuple[str, ...]) -> None:
+    for name in names:
+        parser.add_argument(name, default="")
+
+
 def _add_review_parsers(sub) -> None:
     p_pf = sub.add_parser("preflight", help="Run read-only preflight checks before review.")
-    for name, opts in (("--cwd", {"default": "."}), ("--state-root", {"default": ""}), ("--docs-root", {"default": ""}),
-                       ("--mode", {"default": "", "choices": ["", "own", "external"]}), ("--version", {"default": ""}),
-                       ("--branch", {"default": ""}), ("--baseline", {"default": ""})):
-        p_pf.add_argument(name, **opts)
+    _add_str_args(p_pf, ("--state-root", "--docs-root", "--version", "--branch", "--baseline"))
+    p_pf.add_argument("--cwd", default=".")
+    p_pf.add_argument("--mode", default="", choices=["", "own", "external"])
     p_pf.add_argument("--json", action="store_true")
     p_pf.set_defaults(handler=_cmd_preflight)
 
     p_rec = sub.add_parser("review-record", help="Append immutable review verdict record under .loop/reviews/.")
+    _add_str_args(p_rec, ("--state-root", "--docs-root", "--version", "--branch", "--baseline", "--reviewed-sha", "--summary", "--body-file", "--body", "--decisions-status", "--decisions-summary", "--feature-map-status", "--feature-map-summary", "--baseline-decisions-sha", "--baseline-feature-map-sha"))
     p_rec.add_argument("--cwd", default=".")
-    p_rec.add_argument("--state-root", default="")
-    p_rec.add_argument("--docs-root", default="")
     p_rec.add_argument("--mode", default="", choices=["", "own", "external"])
     p_rec.add_argument("--verdict", required=True, choices=["reject", "pending", "pass"])
     p_rec.add_argument("--category", default="", choices=["", "method", "env"])
-    p_rec.add_argument("--version", default="")
-    p_rec.add_argument("--branch", default="")
-    p_rec.add_argument("--baseline", default="")
-    p_rec.add_argument("--reviewed-sha", default="")
     p_rec.add_argument("--reviewer", default="loop-review")
-    p_rec.add_argument("--summary", default="")
-    p_rec.add_argument("--body-file", default="")
-    p_rec.add_argument("--body", default="")
-    p_rec.add_argument("--decisions-status", default="")
-    p_rec.add_argument("--decisions-summary", default="")
-    p_rec.add_argument("--feature-map-status", default="")
-    p_rec.add_argument("--feature-map-summary", default="")
-    p_rec.add_argument("--baseline-decisions-sha", default="")
-    p_rec.add_argument("--baseline-feature-map-sha", default="")
     p_rec.add_argument("--json", action="store_true")
     p_rec.set_defaults(handler=_cmd_review_record)
 
     p_st = sub.add_parser("review-status", help="Read active review state and routing advice.")
+    _add_str_args(p_st, ("--state-root", "--docs-root", "--version", "--branch"))
     p_st.add_argument("--cwd", default=".")
-    p_st.add_argument("--state-root", default="")
-    p_st.add_argument("--docs-root", default="")
     p_st.add_argument("--mode", default="", choices=["", "own", "external"])
-    p_st.add_argument("--version", default="")
-    p_st.add_argument("--branch", default="")
     p_st.add_argument("--json", action="store_true")
     p_st.set_defaults(handler=_cmd_review_status)
 
     p_ar = sub.add_parser("review-archive", help="Move completed review scope into .loop/archive/.")
+    _add_str_args(p_ar, ("--state-root", "--tag", "--version", "--branch", "--retro-head"))
     p_ar.add_argument("--cwd", default=".")
-    p_ar.add_argument("--state-root", default="")
-    p_ar.add_argument("--tag", default="")
-    p_ar.add_argument("--version", default="")
-    p_ar.add_argument("--branch", default="")
+    p_ar.add_argument("--close-reason", default="", choices=["", "abandoned"])
     p_ar.add_argument("--json", action="store_true")
     p_ar.set_defaults(handler=_cmd_review_archive)
 
@@ -222,25 +202,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.set_defaults(handler=_cmd_init)
 
     p_fp = sub.add_parser("docs-fingerprint", help="Print SHA-256 fingerprints for DECISIONS and FEATURE_MAP.")
+    _add_str_args(p_fp, ("--docs-root",))
     p_fp.add_argument("--cwd", default=".")
     p_fp.add_argument("--mode", default="", choices=["", "own", "external"])
-    p_fp.add_argument("--docs-root", default="")
     p_fp.add_argument("--json", action="store_true")
     p_fp.set_defaults(handler=_cmd_docs_fingerprint)
 
     _add_review_parsers(sub)
 
+    p_ship = sub.add_parser("ship-record", help="Write ship receipt (.ship.json) for a passed review scope.")
+    _add_str_args(p_ship, ("--state-root", "--docs-root", "--version", "--branch", "--reviewed-sha", "--tag"))
+    p_ship.add_argument("--cwd", default=".")
+    p_ship.add_argument("--mode", default="", choices=["", "own", "external"])
+    p_ship.add_argument("--target-branch", default="main")
+    p_ship.add_argument("--push-status", default="local_only")
+    p_ship.add_argument("--json", action="store_true")
+    p_ship.set_defaults(handler=_cmd_ship_record)
+
     p_gate = sub.add_parser("release-gate", help="Run pre-merge or post-tag mechanical release gate.")
+    _add_str_args(p_gate, ("--tag", "--version", "--branch", "--reviewed-sha", "--state-root", "--docs-root", "--ports"))
     p_gate.add_argument("--cwd", default=".")
     p_gate.add_argument("--phase", required=True, choices=["pre-merge", "post-tag"])
     p_gate.add_argument("--mode", default="", choices=["", "own", "external"])
-    p_gate.add_argument("--tag", default="")
-    p_gate.add_argument("--version", default="")
-    p_gate.add_argument("--branch", default="")
-    p_gate.add_argument("--reviewed-sha", default="")
-    p_gate.add_argument("--state-root", default="")
-    p_gate.add_argument("--docs-root", default="")
-    p_gate.add_argument("--ports", default="")
     p_gate.add_argument("--allow-diff", action="append", default=[])
     p_gate.add_argument("--json", action="store_true")
     p_gate.set_defaults(handler=_cmd_release_gate)

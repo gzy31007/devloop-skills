@@ -17,7 +17,7 @@ description: Breaker 独立盲审：第 0 步先跑只读 preflight 拦截交接
 | 刚参与本轮编码且支持只读子代理或跨 Agent 协作工具（兜底） | 仅向受托方传入客观材料执行只读审查，受托方回传证据与裁决文本，外层会话统一调 `review-record` 落盘 |
 | 刚参与本轮编码且无只读委托能力 | 停手并提示用户新开干净对话输入 `/loop-review` |
 
-盲审仅传入客观材料：`.loop/handoff.md`、`git diff <基线>..<候选>`、对应模式的 `FEATURE_MAP.md` 与 `DECISIONS.md`（隔离 worktree 审查时通过 `--state-root` 与 `--docs-root` 关联主工作区）、`.loop/config.json`、本技能与 `references/review-checklist.md`。
+盲审仅传入客观材料：`.loop/handoff.md`、`git diff <基线>..<候选>`、对应模式的 `FEATURE_MAP.md` 与 `DECISIONS.md`（若仓库存在可选 `CODING_STANDARDS.md` 或 `.loop/CODING_STANDARDS.md`，一并传入同候选快照；客串模式先固定摘要再纳入考量；隔离 worktree 审查时通过 `--state-root` 与 `--docs-root` 关联主工作区）、`.loop/config.json`、本技能与 `references/review-checklist.md`。
 
 ## 二、预检门禁、裁决分级与审查流程
 
@@ -32,8 +32,8 @@ description: Breaker 独立盲审：第 0 步先跑只读 preflight 拦截交接
 
 | 裁决等级 | 适用情形 | 处置 |
 | --- | --- | --- |
-| P1 阻断 | 核心功能缺陷、数据损毁/静默丢失、未捕获异常、真实故障注入打穿已声明契约、文档/ADR 与实现矛盾、门禁失败、越界改动或削弱测试 | 写入 `rNN-reject.md`（仅缺浏览器环境且其余 P1 为空写 `rNN-pending.md`） |
-| P2 / P3 非阻塞建议 | 超契约理论极值、锦上添花加固、局部风格优化 | 写入裁决单第 6 节并放行 |
+| P1 阻断 | 核心功能缺陷、数据损毁/静默丢失、未捕获异常、真实故障注入打穿已声明契约或规划期锁定的标准条款、文档/ADR 与实现矛盾、门禁失败、越界改动或削弱测试 | 写入 `rNN-reject.md`（仅缺浏览器环境且其余 P1 为空写 `rNN-pending.md`） |
+| P2 / P3 非阻塞建议 | 超契约理论极值、锦上添花加固、未在规划期锁定的主观风格优化 | 写入裁决单第 6 节并放行，留待 `/loop-retro` 评估 |
 
 | 轮次策略 | 审查范围 | 恢复全审条件 |
 | --- | --- | --- |
@@ -56,7 +56,7 @@ python <loop-review-dir>/scripts/devloop_ops.py review-record --cwd . --verdict 
 
 ## 三、七节裁决单模板
 
-输出与写入 `.loop/reviews/<scope-key>/rNN-<verdict>.md` 正文严格包含 7 节：结论头（`<全绿放行 | 打回返工 | 待人工浏览器验证 | 触发熔断待裁决>`、分支与候选 SHA、审查方式、累计打回次数、减法重构检查点）、1. 真实结果验收与凑数单测排查、2. Web 浏览器验证记录、3. 属性不变量检验（工具/种子/样本数或不适用理由）、4. 故障注入、门禁与文档指纹核验结果、5. 阻断打回清单（P1 项与一键复现命令，为空则放行）、6. 非阻塞建议（P2/P3 项）、7. 下一步（放行进 `/loop-retro`，打回进 `/loop-build`）。
+输出与写入 `.loop/reviews/<scope-key>/rNN-<verdict>.md` 正文严格包含 7 节：结论头（`<全绿放行 | 打回返工 | 待人工浏览器验证 | 触发熔断待裁决>`、分支与候选 SHA、审查方式、累计打回次数、减法重构检查点）、1. 真实结果验收与凑数单测排查、2. Web 浏览器验证记录、3. 属性不变量检验（工具/种子/样本数或不适用理由）、4. 故障注入、门禁与文档指纹核验结果、5. 阻断打回清单（P1 项与一键复现命令，为空则放行）、6. 非阻塞建议（P2/P3 项）、7. 下一步（放行进 `/loop-ship`，打回进 `/loop-build`）。
 
 ## 四、附带脚本清单
 
@@ -64,7 +64,7 @@ python <loop-review-dir>/scripts/devloop_ops.py review-record --cwd . --verdict 
 | --- | --- |
 | `arch_gate.py` / `arch_js.py` | Python 与 TS/JS 行数、复杂度、循环依赖与 `generated_paths` 门禁 |
 | `reap_and_run.py` | 跨平台进程树超时与回环端口探测/回收，支持 `--ports` 与 `--status --json` |
-| `devloop_ops.py` | 统一 CLI：`resolve-kit`、`init`、`docs-fingerprint`、`preflight`、`review-record`、`review-status`、`review-archive`、`release-gate` |
-| `devloop_git.py` / `devloop_markers.py` / `devloop_docs.py` / `devloop_init.py` / `devloop_gate.py` | Git 校验与差异清单、标记块、文档指纹、幂等初始化、两阶段发版门禁 |
-| `devloop_preflight.py` / `devloop_status.py` / `devloop_review_io.py` / `devloop_review_store.py` / `devloop_reviews.py` / `devloop_archive.py` | 只读预检、路由状态、作用域存储、并发锁、不可覆盖裁决落盘、整目录归档 |
-| `verify_scripts.py` / `verify_ops_cases.py` / `verify_preflight_cases.py` / `verify_review_cases.py` / `verify_gate_cases.py` | 隔离自测套件，验证预检、双向交接、门禁、禁语规则与自身架构门禁 |
+| `devloop_ops.py` | 统一 CLI：`resolve-kit`、`init`、`docs-fingerprint`、`preflight`、`review-record`、`review-status`、`ship-record`、`review-archive`、`release-gate` |
+| `devloop_git.py` / `devloop_markers.py` / `devloop_docs.py` / `devloop_init.py` / `devloop_gate.py` / `devloop_ship.py` | Git 校验与差异清单、标记块、文档指纹、幂等初始化、两阶段发版门禁、发版凭据与共同校验 |
+| `devloop_preflight.py` / `devloop_status.py` / `devloop_review_io.py` / `devloop_review_store.py` / `devloop_reviews.py` / `devloop_archive.py` | 只读预检、路由状态、作用域存储、并发锁、不可覆盖裁决落盘、抗崩溃整目录归档 |
+| `verify_scripts.py` / `verify_ops_cases.py` / `verify_preflight_cases.py` / `verify_review_cases.py` / `verify_gate_cases.py` / `verify_ship_retro_cases.py` | 隔离自测套件，验证预检、双向交接、发版复盘、门禁、禁语规则与自身架构门禁 |

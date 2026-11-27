@@ -1,24 +1,18 @@
 #!/usr/bin/env python3
 """Isolated self-test suite for devloop scripts, templates, and skill files. Stdlib only."""
 
-import json
-import os
-import pathlib
-import re
-import shutil
-import subprocess
-import sys
-import tempfile
-import time
+import importlib.util, json, os, pathlib, re, shutil, subprocess, sys, tempfile, time
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+from devloop_git import KIT_SCRIPTS, KIT_SKILLS
 from verify_gate_cases import check_ops_review_and_release_gate, check_publish_devloop_unit
 from verify_ops_cases import check_generated_paths, check_ops_init_and_resolve
 from verify_preflight_cases import check_preflight_and_status
 from verify_review_cases import check_review_handoff_and_archive
+from verify_ship_retro_cases import check_ship_and_retro_flows
 
 SKILLS = SCRIPTS.parents[1]
 ARCH_GATE = SCRIPTS / "arch_gate.py"
@@ -197,8 +191,22 @@ def _check_paragraphs(path, text):
         assert run_lines <= 4, f"{path.name}: paragraph exceeds 4 lines"
 
 
+def _check_publish_sync():
+    pub_script = SKILLS.parents[2] / "scripts" / "publish_devloop.py"
+    if not pub_script.is_file():
+        return
+    spec = importlib.util.spec_from_file_location("publish_devloop_sync", pub_script)
+    assert spec and spec.loader
+    pub_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pub_mod)
+    assert tuple(pub_mod.EXPECTED_SKILLS) == tuple(KIT_SKILLS), pub_mod.EXPECTED_SKILLS
+    assert tuple(pub_mod.EXPECTED_SCRIPTS) == tuple(KIT_SCRIPTS), pub_mod.EXPECTED_SCRIPTS
+
+
 def check_skills():
-    expected = {"agent-docs", "hakimi", "loop-init", "loop-plan", "loop-build", "loop-review", "loop-retro"}
+    assert len(KIT_SKILLS) == 8 and "loop-ship" in KIT_SKILLS, KIT_SKILLS
+    _check_publish_sync()
+    expected = set(KIT_SKILLS)
     found = {path.parent.name for path in SKILLS.glob("*/SKILL.md")}
     assert found == expected, (sorted(found), sorted(expected))
     for name in sorted(expected):
@@ -224,7 +232,7 @@ def check_skills():
     assert "本版打回次数" not in handoff and "## 打回记录" not in handoff
     decisions = (refs / "decisions.template.md").read_text(encoding="utf-8")
     assert "可推翻" in decisions and "superseded" in decisions and decisions.index("可推翻") < 600
-    return f"skills: 7 frontmatter names, {len(documents)} md files pass banned/style/emoji/paragraph checks"
+    return f"skills: {len(expected)} frontmatter names, {len(documents)} md files pass banned/style/emoji/paragraph checks"
 
 
 def check_self_arch_gate():
@@ -244,11 +252,9 @@ def main():
         ("language_families", lambda: check_language_families(work)), ("js_methods", lambda: check_js_methods(work)),
         ("mixed_config", lambda: check_mixed_config(work)), ("generated_paths", lambda: check_generated_paths(work)),
         ("reaper", lambda: check_reaper(work)), ("ops_init_resolve", lambda: check_ops_init_and_resolve(work)),
-        ("ops_preflight_status", lambda: check_preflight_and_status(work)),
-        ("ops_review_handoff", lambda: check_review_handoff_and_archive(work)),
-        ("ops_review_release", lambda: check_ops_review_and_release_gate(work)),
-        ("publish_devloop", lambda: check_publish_devloop_unit(work)),
-        ("skills", check_skills), ("self_arch_gate", check_self_arch_gate),
+        ("ops_preflight_status", lambda: check_preflight_and_status(work)), ("ops_review_handoff", lambda: check_review_handoff_and_archive(work)),
+        ("ops_review_release", lambda: check_ops_review_and_release_gate(work)), ("ops_ship_retro", lambda: check_ship_and_retro_flows(work)),
+        ("publish_devloop", lambda: check_publish_devloop_unit(work)), ("skills", check_skills), ("self_arch_gate", check_self_arch_gate),
     ]
     failures = 0
     print(f"verify_scripts.py | python {sys.version.split()[0]} | scripts {SCRIPTS}")

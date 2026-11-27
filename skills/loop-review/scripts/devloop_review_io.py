@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import os
 import pathlib
 import sys
@@ -106,6 +107,26 @@ def atomic_write_new(target: pathlib.Path, content: str) -> None:
         fd = -1
         if target.exists():
             raise FileExistsError(f"refusing to overwrite existing review record: {target}")
+        os.replace(tmp_path, target)
+    except BaseException:
+        if fd >= 0:
+            os.close(fd)
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def atomic_write_json(target: pathlib.Path, payload: dict) -> None:
+    if target.is_symlink():
+        raise OSError(f"refusing symlink target: {target}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    fd, tmp_name = tempfile.mkstemp(prefix=".tmp-meta-", suffix=".json", dir=str(target.parent))
+    tmp_path = pathlib.Path(tmp_name)
+    try:
+        os.write(fd, text.encode("utf-8"))
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
         os.replace(tmp_path, target)
     except BaseException:
         if fd >= 0:

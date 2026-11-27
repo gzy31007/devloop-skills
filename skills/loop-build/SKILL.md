@@ -9,7 +9,7 @@ description: 按计划开分支编码：对照写审共用清单圈定高风险�
 
 ## 一、开分支与四步返工
 
-新开版本从约定基线拉出 `feat/<版本>-<主题>` 分支开发，主干合并与打标签交由 `/loop-retro` 处理。动工前先查询 `review-status`；若处于返工状态，先读取最新 `rNN-reject.md` 原件并严格按以下四步执行：
+新开版本从约定基线拉出 `feat/<版本>-<主题>` 分支开发，主干合并、打标签与 PR 交接交由 `/loop-ship` 处理。动工前先查询 `review-status`；若处于返工状态，先读取最新 `rNN-reject.md` 原件并严格按以下四步执行：
 
 ```bash
 python <loop-review-dir>/scripts/devloop_ops.py review-status --cwd . --json
@@ -38,7 +38,7 @@ python <loop-review-dir>/scripts/arch_gate.py --json .
 
 ## 三、文档同步、预检与锁定提交
 
-交审前同步 `DECISIONS.md`、`FEATURE_MAP.md`、清单版本号（`package.json` / `pyproject.toml`），按 `loop-review/references/handoff.template.md` 填齐 `.loop/handoff.md`（纯分支名、完整 `基线 SHA`、契约摘要、改动范围、自测与返工验证证据、风险自检行与两份文档同步声明），再按接入模式提交：
+机械规则交由本地确定性检查落实，`AGENTS.md` 保持精简导航；若仓库存在可选 `CODING_STANDARDS.md`（客串在 `.loop/CODING_STANDARDS.md`），编码前读取与候选同快照的对应条款。交审前同步 `DECISIONS.md`、`FEATURE_MAP.md`、清单版本号（`package.json` / `pyproject.toml`），按 `loop-review/references/handoff.template.md` 填齐 `.loop/handoff.md`（纯分支名、完整 `基线 SHA`、契约摘要、改动范围、自测与返工验证证据、风险自检行与两份文档同步声明），再按接入模式提交：
 
 | 接入模式 | 提交范围 | 交接要求 |
 | --- | --- | --- |

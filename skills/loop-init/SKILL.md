@@ -29,6 +29,8 @@ python <loop-review-dir>/scripts/devloop_ops.py init --cwd . --mode external --j
 
 重复运行保持幂等：保留已有 `mode` 与其他自定义配置键，`ignore_dirs` 与默认忽略目录去重并集合并，保留 `DECISIONS.md`、`FEATURE_MAP.md` 与 `.loop/handoff.md` 既有内容；如需移除默认忽略目录直接编辑 `.loop/config.json`，显式切换模式传入 `--switch-mode`，迁移目录名影子配置传入 `--migrate-shadow`。
 
+存量仓库刷新 8 技能 `AGENTS.md` 索引块安排在新接入或下一轮 `/loop-plan` 前执行，避开活跃候选过审待发版窗口。
+
 ## 基线门禁与交接
 
 初始化完成后运行架构门禁验证基线，按需在 `.loop/config.json` 填写 `generated_paths` 与阈值：
