@@ -94,8 +94,8 @@ python <loop-review-dir>/scripts/devloop_ops.py review-record --cwd . --reviewed
 | 脚本 | 职责 |
 | --- | --- |
 | `arch_gate.py` / `arch_js.py` | Python 与 TS/JS 行数、复杂度、循环依赖与 `generated_paths` 门禁 |
-| `reap_and_run.py` | 跨平台进程树超时与回环端口探测/回收，支持 `--ports` 与 `--status --json` |
+| `reap_and_run.py` / `devloop_ports.py` | 跨平台进程树超时与回环端口解析/清理，支持读取 `.loop/config.json` 的 `ports`、`--state-root`、`--status --json` 与 `none` |
 | `devloop_ops.py` | 统一 CLI：`resolve-kit`、`init`、`docs-fingerprint`、`preflight`、`review-record`、`review-status`、`ship-record`、`review-archive`、`release-gate` |
 | `devloop_git.py` / `devloop_markers.py` / `devloop_docs.py` / `devloop_init.py` / `devloop_gate.py` / `devloop_ship.py` | Git 校验与差异清单、标记块、文档指纹、幂等初始化、两阶段发版门禁、发版凭据与共同校验 |
-| `devloop_preflight.py` / `devloop_status.py` / `devloop_review_io.py` / `devloop_review_store.py` / `devloop_reviews.py` / `devloop_archive.py` | 只读预检、路由状态、作用域存储、并发锁、不可覆盖裁决落盘、抗崩溃整目录归档 |
-| `verify_scripts.py` / `verify_ops_cases.py` / `verify_preflight_cases.py` / `verify_review_cases.py` / `verify_gate_cases.py` / `verify_ship_retro_cases.py` | 隔离自测套件，验证预检、双向交接、发版复盘、门禁、禁语规则与自身架构门禁 |
+| `devloop_preflight.py` / `devloop_stale.py` / `devloop_status.py` / `devloop_review_io.py` / `devloop_review_store.py` / `devloop_reviews.py` / `devloop_archive.py` | 只读预检、滞留归档交接检测、路由状态、作用域存储、并发锁、不可覆盖裁决落盘、抗崩溃整目录归档 |
+| `verify_scripts.py` / `verify_ops_cases.py` / `verify_preflight_cases.py` / `verify_review_cases.py` / `verify_gate_cases.py` / `verify_ship_retro_cases.py` / `verify_v017_cases.py` | 隔离自测套件，验证预检、双向交接、发版复盘、门禁、端口与滞留升级用例、禁语规则与自身架构门禁 |

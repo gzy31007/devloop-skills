@@ -21,12 +21,13 @@ description: 哈基米猫娘助手。只读侦察仓库现状（devloop_ops.py r
 
 ## 阶段判定与下一命令
 
-直接消费 `review-status` 返回的 `recommended_next`、`shipped_scope`、`ship_kind`、`released_tag`、`archived_scope`、`preflight_checked`、`preflight_passed` 与 `preflight_violations`：
+直接消费 `review-status` 返回的 `recommended_next`、`shipped_scope`、`ship_kind`、`released_tag`、`archived_scope`、`handoff_stale`、`stale_archived_scope`、`preflight_checked`、`preflight_passed` 与 `preflight_violations`：
 
 | `review-status` 与仓库现状 | 下一命令或动作 |
 | --- | --- |
 | `recommended_next == "/loop-init"` | `/loop-init` |
 | `recommended_next == "/loop-plan"`（含 `released_tag` 或 `archived_scope` 非空且无活跃记录） | `/loop-plan`（启动或开启下一版本） |
+| `handoff_stale == true` | `/loop-plan`（`stale_archived_scope` 仅作只读诊断，`released_tag` 与 `archived_scope` 保持为空；历史缺 `.retro.json` 归档依赖本地 tag 祖先链） |
 | `preflight_checked == true` 且 `preflight_passed == false` | `/loop-build`（逐条列出 `preflight_violations` 修复项，零裁决落盘） |
 | `recommended_next == "/loop-build"`（计划就绪未交接，或 `reject_count < 3` 待返工） | `/loop-build` |
 | `recommended_next == "manual_decision"`（`circuit_breaker_triggered == true`） | 提示触发熔断待老板裁决，附 `.loop/reviews/<scope-key>/` 原件路径 |

@@ -28,23 +28,27 @@ description: 审查放行后输出精简三块人工抽检摘要，按自研与�
 | `own`（自研合主干打标） | 复核 `.loop/handoff.md` -> `pre-merge` -> 切目标分支（默认 `main`）优先 `git merge --ff-only` -> `git tag -a vX.Y -m "release vX.Y"` -> `post-tag --reviewed-sha <sha>` -> 仓外日志与清理端口 -> 按授权推送 -> `ship-record --mode own` | 仅当主干无分歧时才允许 `--no-ff`；主干已分歧则立即停手并退回 `/loop-build` 同步主干后重新审查；`post-tag` 或本轮要求的推送失败时从失败步骤续跑后再写 `.ship.json` |
 | `external`（客串 PR 交接） | 删除 `.tmp/` 并核验端口空闲 -> 跑省略 `--tag` 的 `pre-merge` -> 输出面向 PR 的合并摘要 -> `ship-record --mode external` | 保持上游 `main`、标签与 `.loop/` 跟踪树零修改；跨工作区时按需传入 `--state-root` 与 `--docs-root` |
 
+`reap_and_run.py --status --json` 按 `CLI --ports > .loop/config.json['ports'] > 18700-18799` 解析端口并支持 `none`，跨 worktree 传入 `--state-root <主工作区>` 或显式 `--ports <区间>`。
+
+`ship-record` 支持可选 `--sampling-note "<抽检意见>"`（折叠空白后上限 500 字符，超限报 `[SAMPLING_NOTE_TOO_LONG]`，空白省略该键），写入 `.ship.json` 并在归档时同步写入 `.retro.json` 历史快照，`review-status` 输出省略该字段。
+
 ```bash
 # 1. 自研模式：pre-merge -> ff-only 合主干 -> 打标签 -> post-tag -> 清理端口 -> ship-record
 python <loop-review-dir>/scripts/devloop_ops.py release-gate --cwd . --phase pre-merge --tag vX.Y --json
 git checkout main && git merge --ff-only <feature-branch>
 git tag -a vX.Y -m "release vX.Y"
 python <loop-review-dir>/scripts/devloop_ops.py release-gate --cwd . --phase post-tag --tag vX.Y --branch main --reviewed-sha <reviewed_sha> --json
-python <loop-review-dir>/scripts/reap_and_run.py --status --json
-python <loop-review-dir>/scripts/devloop_ops.py ship-record --cwd . --mode own --tag vX.Y --reviewed-sha <reviewed_sha> --target-branch main --push-status local_only --json
+python <loop-review-dir>/scripts/reap_and_run.py --status --cwd . --json
+python <loop-review-dir>/scripts/devloop_ops.py ship-record --cwd . --mode own --tag vX.Y --reviewed-sha <reviewed_sha> --target-branch main --push-status local_only --sampling-note "<可选抽检备注>" --json
 
-# 2. 客串模式：省略 --tag 执行 pre-merge 与 PR 交接凭据写入
-python <loop-review-dir>/scripts/reap_and_run.py --status --json
+# 2. 客串模式：省略 --tag 执行 pre-merge 与 PR 交接凭据写入（跨 worktree 补 --state-root）
+python <loop-review-dir>/scripts/reap_and_run.py --status --cwd . --state-root <主工作区> --json
 python <loop-review-dir>/scripts/devloop_ops.py release-gate --cwd . --phase pre-merge --mode external --version vX.Y --branch <feature-branch> --reviewed-sha <reviewed_sha> --json
-python <loop-review-dir>/scripts/devloop_ops.py ship-record --cwd . --mode external --version vX.Y --branch <feature-branch> --reviewed-sha <reviewed_sha> --json
+python <loop-review-dir>/scripts/devloop_ops.py ship-record --cwd . --mode external --version vX.Y --branch <feature-branch> --reviewed-sha <reviewed_sha> --sampling-note "<可选抽检备注>" --json
 ```
 
 `telemetry_log` 标准 `released` JSONL 字段：`{"event":"released","tag":"vX.Y","reviewed_sha":"...","release_sha":"...","mode":"own"}`。
 
 ## 三、清理与交接下步
 
-删除 `.tmp/` 与临时测试 worktree，确认 `reap_and_run.py --status --json` 的 `listening` 为空且 `git status --porcelain` 为空。保留 `.loop/reviews/<scope-key>/` 与 `.loop/reviews/<scope-key>.ship.json` 活跃不归档，提示用户执行 `/loop-retro` 完成工作环境复盘与归档收尾。
+删除 `.tmp/` 与临时测试 worktree，确认 `reap_and_run.py --status --cwd . --json`（跨 worktree 加 `--state-root <主工作区>`）的 `listening` 为空且 `git status --porcelain` 为空。保留 `.loop/reviews/<scope-key>/` 与 `.loop/reviews/<scope-key>.ship.json` 活跃不归档，提示用户执行 `/loop-retro` 完成工作环境复盘与归档收尾。

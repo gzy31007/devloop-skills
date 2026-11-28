@@ -8,6 +8,7 @@ import pathlib
 import re
 
 from devloop_git import current_branch, is_ancestor, resolve_commit_sha, run_git
+from devloop_ports import is_none_ports, resolve_ports
 from devloop_preflight import resolve_review_roots
 from devloop_review_store import list_scope_records, normalize_version, parse_handoff_meta, version_matches_tag
 from devloop_reviews import verify_review_pass_for_gate
@@ -18,22 +19,7 @@ from devloop_ship import (
     check_same_repo_and_clean,
     locate_active_scope,
 )
-from reap_and_run import DEFAULT_PORTS_SPEC, probe_ports
-
-
-def _resolve_ports(cwd: pathlib.Path, cli_ports: str) -> str:
-    if cli_ports.strip():
-        return cli_ports.strip()
-    cfg = cwd / ".loop" / "config.json"
-    if cfg.is_file():
-        try:
-            loaded = json.loads(cfg.read_text(encoding="utf-8-sig"))
-            val = loaded.get("ports") if isinstance(loaded, dict) else ""
-            if isinstance(val, str) and val.strip():
-                return val.strip()
-        except (OSError, ValueError):
-            pass
-    return DEFAULT_PORTS_SPEC
+from reap_and_run import probe_ports
 
 
 def _check_manifest_versions(cwd: pathlib.Path, tag: str) -> list[str]:
@@ -56,9 +42,9 @@ def _check_manifest_versions(cwd: pathlib.Path, tag: str) -> list[str]:
     return violations
 
 
-def _check_ports(cwd: pathlib.Path, ports: str) -> list[str]:
-    eff_ports = _resolve_ports(cwd, ports)
-    if eff_ports.lower() == "none":
+def _check_ports(roots: dict, ports: str) -> list[str]:
+    eff_ports, _ = resolve_ports(roots["cwd"], ports, fallback_cwd=roots["state"])
+    if is_none_ports(eff_ports):
         return []
     try:
         active = probe_ports(eff_ports)
@@ -72,7 +58,7 @@ def _run_pre_merge(
     state_root: str, docs_root: str, ports: str, extra_allow: list[str],
 ) -> dict:
     cwd, mode = roots["cwd"], roots["mode"]
-    violations = check_same_repo_and_clean(roots) + check_external_leaks_and_tmp(roots) + _check_ports(cwd, ports)
+    violations = check_same_repo_and_clean(roots) + check_external_leaks_and_tmp(roots) + _check_ports(roots, ports)
     violations += _check_manifest_versions(cwd, tag)
     for item in extra_allow:
         norm = item.strip().replace("\\", "/")

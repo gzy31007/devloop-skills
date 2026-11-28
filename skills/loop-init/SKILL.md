@@ -33,7 +33,7 @@ python <loop-review-dir>/scripts/devloop_ops.py init --cwd . --mode external --j
 
 ## 基线门禁与交接
 
-初始化完成后运行架构门禁验证基线，按需在 `.loop/config.json` 填写 `generated_paths` 与阈值：
+初始化完成后运行架构门禁验证基线，按需在 `.loop/config.json` 填写 `generated_paths`、`ports`（如 `"18750-18769"` 或 `"none"`）与阈值：
 
 ```bash
 python <loop-review-dir>/scripts/arch_gate.py --json .

@@ -3,19 +3,14 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-import pathlib
-import re
+import hashlib, json, pathlib, re
 from datetime import datetime, timezone
 
 from devloop_docs import docs_fingerprint, verify_doc_attestation
-from devloop_git import (current_branch, head_sha, is_ancestor, is_tracked, is_worktree_clean,
-                         repo_prefix, resolve_commit_sha, run_git, same_git_repo)
+from devloop_git import current_branch, head_sha, is_ancestor, is_tracked, is_worktree_clean, repo_prefix, resolve_commit_sha, run_git, same_git_repo
 from devloop_preflight import resolve_review_roots
-from devloop_review_io import acquire_review_lock, atomic_write_json, verify_review_paths_ignored
-from devloop_review_store import (list_active_scope_keys, list_scope_records, make_scope_key,
-                                  normalize_version, parse_handoff_meta, version_matches_tag)
+from devloop_review_io import acquire_review_lock, atomic_write_json, normalize_sampling_note, optional_note_ok, verify_review_paths_ignored
+from devloop_review_store import list_active_scope_keys, list_scope_records, make_scope_key, normalize_version, parse_handoff_meta, version_matches_tag
 
 DEFAULT_ALLOW_DIFF = frozenset({".loop/handoff.md"})
 SHIP_COMMON_KEYS = ("mode", "kind", "scope_key", "version", "branch", "reviewed_sha", "shipped_at")
@@ -72,10 +67,7 @@ def check_external_leaks_and_tmp(roots: dict) -> list[str]:
     return errors
 
 
-def check_reviewed_diff_between(
-    git_root: pathlib.Path, reviewed_sha: str, target_ref: str = "HEAD",
-    allow_diff: frozenset[str] = DEFAULT_ALLOW_DIFF,
-) -> list[str]:
+def check_reviewed_diff_between(git_root: pathlib.Path, reviewed_sha: str, target_ref: str = "HEAD", allow_diff: frozenset[str] = DEFAULT_ALLOW_DIFF) -> list[str]:
     if not is_ancestor(git_root, reviewed_sha, target_ref):
         return [f"[NOT_ANCESTOR] reviewed_sha {reviewed_sha} is absent from {target_ref} ancestry"]
     diff_proc = run_git(["diff", "--name-only", f"{reviewed_sha}..{target_ref}"], git_root)
@@ -94,42 +86,50 @@ def _load_json_dict(path: pathlib.Path, code: str) -> tuple[dict | None, str]:
         loaded = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         return None, f"[{code}] {path.name}: corrupt JSON ({exc})"
-    if not isinstance(loaded, dict):
-        return None, f"[{code}] {path.name}: JSON object required"
-    return loaded, ""
+    return (loaded, "") if isinstance(loaded, dict) else (None, f"[{code}] {path.name}: JSON object required")
+
+
+def _load_checked_meta(path: pathlib.Path, code: str, scope_key: str, required_keys: tuple[str, ...]) -> tuple[dict | None, str]:
+    data, err = _load_json_dict(path, code)
+    if err or data is None:
+        return data, err
+    if not _str_fields_ok(data, required_keys) or data.get("scope_key") != scope_key:
+        return None, f"[{code}] {path.name}: missing or mismatched fields"
+    if not optional_note_ok(data):
+        return None, f"[{code}] {path.name}: invalid sampling_note"
+    return data, ""
+
+
+def _ship_mode_ok(data: dict) -> bool:
+    mode, kind = data.get("mode"), data.get("kind")
+    if mode == "own" and kind == "release_tag":
+        return _str_fields_ok(data, SHIP_OWN_KEYS) and version_matches_tag(data["version"], data["tag"])
+    return mode == "external" and kind == "pr_handoff"
 
 
 def read_ship_receipt(reviews_root: pathlib.Path, scope_key: str) -> tuple[dict | None, str]:
     path = ship_receipt_path(reviews_root, scope_key)
-    data, err = _load_json_dict(path, "SHIP_RECEIPT_CORRUPT")
+    data, err = _load_checked_meta(path, "SHIP_RECEIPT_CORRUPT", scope_key, SHIP_COMMON_KEYS)
     if err or data is None:
         return data, err
-    if not _str_fields_ok(data, SHIP_COMMON_KEYS) or data.get("scope_key") != scope_key:
-        return None, f"[SHIP_RECEIPT_CORRUPT] {path.name}: missing or mismatched fields"
-    mode, kind = data.get("mode"), data.get("kind")
-    if mode == "own" and kind == "release_tag":
-        ok = _str_fields_ok(data, SHIP_OWN_KEYS) and version_matches_tag(data["version"], data["tag"])
-        return (data, "") if ok else (None, f"[SHIP_RECEIPT_CORRUPT] {path.name}: invalid own release receipt")
-    if mode == "external" and kind == "pr_handoff":
-        return data, ""
-    return None, f"[SHIP_RECEIPT_CORRUPT] {path.name}: invalid mode/kind ({mode!r}/{kind!r})"
+    return (data, "") if _ship_mode_ok(data) else (None, f"[SHIP_RECEIPT_CORRUPT] {path.name}: invalid mode/kind ({data.get('mode')!r}/{data.get('kind')!r})")
+
+
+def _retro_fields_ok(data: dict) -> bool:
+    reason, kind = data.get("close_reason"), data.get("ship_kind")
+    if reason not in ("shipped", "abandoned") or kind not in ("release_tag", "pr_handoff", "abandoned"):
+        return False
+    if reason == "abandoned":
+        return kind == "abandoned"
+    return kind != "release_tag" or (_str_fields_ok(data, ("tag", "tag_sha")) and version_matches_tag(data["version"], data["tag"]))
 
 
 def read_retro_meta(archive_root: pathlib.Path, scope_key: str) -> tuple[dict | None, str]:
     path = retro_meta_path(archive_root, scope_key)
-    data, err = _load_json_dict(path, "ARCHIVE_META_CORRUPT")
+    data, err = _load_checked_meta(path, "ARCHIVE_META_CORRUPT", scope_key, RETRO_COMMON_KEYS)
     if err or data is None:
         return data, err
-    if not _str_fields_ok(data, RETRO_COMMON_KEYS) or data.get("scope_key") != scope_key:
-        return None, f"[ARCHIVE_META_CORRUPT] {path.name}: missing or mismatched fields"
-    reason, kind = data.get("close_reason"), data.get("ship_kind")
-    if reason not in ("shipped", "abandoned") or kind not in ("release_tag", "pr_handoff", "abandoned"):
-        return None, f"[ARCHIVE_META_CORRUPT] {path.name}: invalid close_reason or ship_kind"
-    if reason == "abandoned" and kind != "abandoned":
-        return None, f"[ARCHIVE_META_CORRUPT] {path.name}: abandoned close requires ship_kind=abandoned"
-    if kind == "release_tag" and (not _str_fields_ok(data, ("tag", "tag_sha")) or not version_matches_tag(data["version"], data["tag"])):
-        return None, f"[ARCHIVE_META_CORRUPT] {path.name}: invalid release_tag metadata"
-    return data, ""
+    return (data, "") if _retro_fields_ok(data) else (None, f"[ARCHIVE_META_CORRUPT] {path.name}: invalid close_reason or ship_kind")
 
 
 def scan_corrupt_meta(reviews_root: pathlib.Path, archive_root: pathlib.Path) -> list[str]:
@@ -182,9 +182,13 @@ def _resolve_ship_version(ho_ver: str, version: str, tag: str) -> tuple[str, str
         return "", f"[VERSION_INVALID] {exc}"
 
 
-def _build_own_receipt(
-    roots: dict, scope_key: str, latest: dict, cur_head: str, tag: str, target_branch: str, push_status: str, now: str,
-) -> tuple[dict | None, list[str]]:
+def _with_note(receipt: dict, sampling_note: str) -> dict:
+    if sampling_note:
+        receipt["sampling_note"] = sampling_note
+    return receipt
+
+
+def _build_own_receipt(roots: dict, scope_key: str, latest: dict, cur_head: str, tag: str, target_branch: str, push_status: str, now: str, sampling_note: str = "") -> tuple[dict | None, list[str]]:
     eff_tag = tag.strip()
     if not eff_tag:
         return None, ["[TAG_REQUIRED] --tag required for own mode ship-record"]
@@ -200,15 +204,11 @@ def _build_own_receipt(
         errs.append(f"[BRANCH_MISMATCH] current branch differs from {eff_target}")
     if tag_sha:
         errs += check_reviewed_diff_between(roots["cwd_git"], latest["reviewed_sha"], tag_sha)
-    return {
-        "mode": "own", "kind": "release_tag", "scope_key": scope_key, "version": latest["version"],
-        "branch": latest["branch"], "reviewed_sha": latest["reviewed_sha"], "tag": eff_tag,
-        "tag_sha": tag_sha, "release_sha": cur_head, "target_branch": eff_target,
-        "push_status": push_status.strip() or "local_only", "shipped_at": now,
-    }, errs
+    receipt = {"mode": "own", "kind": "release_tag", "scope_key": scope_key, "version": latest["version"], "branch": latest["branch"], "reviewed_sha": latest["reviewed_sha"], "tag": eff_tag, "tag_sha": tag_sha, "release_sha": cur_head, "target_branch": eff_target, "push_status": push_status.strip() or "local_only", "shipped_at": now}
+    return _with_note(receipt, sampling_note), errs
 
 
-def _build_ship_receipt(roots: dict, scope_key: str, latest: dict, tag: str, target_branch: str, push_status: str) -> tuple[dict | None, list[str]]:
+def _build_ship_receipt(roots: dict, scope_key: str, latest: dict, tag: str, target_branch: str, push_status: str, sampling_note: str = "") -> tuple[dict | None, list[str]]:
     cur_head = head_sha(roots["cwd"])
     if not cur_head:
         return None, ["[HEAD_MISSING] repository has no HEAD commit"]
@@ -216,8 +216,9 @@ def _build_ship_receipt(roots: dict, scope_key: str, latest: dict, tag: str, tar
     if roots["mode"] == "external":
         errs = ["[TAG_FORBIDDEN_EXTERNAL] --tag is not allowed in external mode"] if tag.strip() else []
         errs += check_reviewed_diff_between(roots["cwd_git"], latest["reviewed_sha"], cur_head)
-        return {"mode": "external", "kind": "pr_handoff", "scope_key": scope_key, "version": latest["version"], "branch": latest["branch"], "reviewed_sha": latest["reviewed_sha"], "shipped_at": now}, errs
-    return _build_own_receipt(roots, scope_key, latest, cur_head, tag, target_branch, push_status, now)
+        receipt = {"mode": "external", "kind": "pr_handoff", "scope_key": scope_key, "version": latest["version"], "branch": latest["branch"], "reviewed_sha": latest["reviewed_sha"], "shipped_at": now}
+        return _with_note(receipt, sampling_note), errs
+    return _build_own_receipt(roots, scope_key, latest, cur_head, tag, target_branch, push_status, now, sampling_note)
 
 
 def _validate_pass_for_ship(roots: dict, scope_key: str, reviewed_sha: str) -> tuple[dict | None, list[str]]:
@@ -246,14 +247,13 @@ def _commit_ship_receipt(reviews_root: pathlib.Path, scope_key: str, receipt: di
     return 0, {"status": "PASSED", "idempotent": False, "scope_key": scope_key, "receipt_path": str(path), "receipt": receipt}
 
 
-def run_ship_record(
-    cwd: pathlib.Path, state_root: str = "", docs_root: str = "", mode: str = "",
-    version: str = "", branch: str = "", reviewed_sha: str = "", tag: str = "",
-    target_branch: str = "main", push_status: str = "local_only",
-) -> tuple[int, dict]:
+def run_ship_record(cwd: pathlib.Path, state_root: str = "", docs_root: str = "", mode: str = "", version: str = "", branch: str = "", reviewed_sha: str = "", tag: str = "", target_branch: str = "main", push_status: str = "local_only", sampling_note: str = "") -> tuple[int, dict]:
     roots, root_errs = resolve_review_roots(cwd, state_root, docs_root, mode)
     if root_errs or roots is None:
         return 2, {"status": "FAILED", "violations": root_errs}
+    clean_note, note_err = normalize_sampling_note(sampling_note)
+    if note_err:
+        return 1, {"status": "FAILED", "violations": [note_err]}
     reviews_root = roots["state"] / ".loop" / "reviews"
     with acquire_review_lock(roots["state"]):
         _, ign_errs = verify_review_paths_ignored(roots["state"], (".loop/reviews", ".loop/archive"))
@@ -266,7 +266,7 @@ def run_ship_record(
         if scope_err:
             return 1, {"status": "FAILED", "violations": errs + [scope_err]}
         latest, pass_errs = _validate_pass_for_ship(roots, scope_key, reviewed_sha)
-        receipt, rec_errs = _build_ship_receipt(roots, scope_key, latest, tag, target_branch, push_status) if latest else (None, [])
+        receipt, rec_errs = _build_ship_receipt(roots, scope_key, latest, tag, target_branch, push_status, clean_note) if latest else (None, [])
         if errs + pass_errs + rec_errs or receipt is None:
             return 1, {"status": "FAILED", "violations": errs + pass_errs + rec_errs}
         return _commit_ship_receipt(reviews_root, scope_key, receipt)

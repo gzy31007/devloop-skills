@@ -9,9 +9,9 @@ from devloop_docs import docs_fingerprint
 from devloop_git import current_branch, head_sha, is_ancestor, is_worktree_clean, resolve_commit_sha, run_git, tags_at_head
 from devloop_markers import INDEX_START
 from devloop_preflight import load_handoff_content, resolve_review_roots, run_preflight
-from devloop_review_store import (count_rejects, find_archived_pass_records, list_active_scope_keys,
-                                  list_scope_records, make_scope_key, parse_handoff_meta, version_matches_tag)
+from devloop_review_store import count_rejects, find_archived_pass_records, list_active_scope_keys, list_scope_records, make_scope_key, parse_handoff_meta, version_matches_tag
 from devloop_ship import read_retro_meta, read_ship_receipt, scan_corrupt_meta
+from devloop_stale import find_stale_archived_handoff
 
 
 def _pending_archive_scopes(reviews_root: pathlib.Path, current_scope: str) -> list[dict]:
@@ -112,10 +112,7 @@ def _shipped_candidates(scope_key: str, records: list[dict], pending: list[dict]
     return cands
 
 
-def _find_shipped_scope(
-    roots: dict, reviews_root: pathlib.Path, scope_key: str, records: list[dict],
-    pending: list[dict], eff_ver: str, cur_head: str,
-) -> tuple[str, str, str]:
+def _find_shipped_scope(roots: dict, reviews_root: pathlib.Path, scope_key: str, records: list[dict], pending: list[dict], eff_ver: str, cur_head: str) -> tuple[str, str, str]:
     cands = _shipped_candidates(scope_key, records, pending, eff_ver)
     for key, _, rev_sha in cands:
         hit = _valid_ship_for_head(roots["cwd"], reviews_root, key, rev_sha, cur_head)
@@ -135,14 +132,10 @@ def _find_shipped_scope(
     return "", "", ""
 
 
-def _match_archived_entry(
-    cwd: pathlib.Path, arch_key: str, rec: dict, rmeta: dict | None,
-    eff_ver: str, cur_head: str, matched_tags: list[str],
-) -> tuple[str, str, str] | None:
+def _match_archived_entry(cwd: pathlib.Path, arch_key: str, rec: dict, rmeta: dict | None, eff_ver: str, cur_head: str, matched_tags: list[str]) -> tuple[str, str, str] | None:
     if rmeta is None:
         if matched_tags and is_ancestor(cwd, rec["reviewed_sha"], cur_head):
-            rel_tag = eff_ver if eff_ver in matched_tags else matched_tags[0]
-            return rel_tag, arch_key, "release_tag"
+            return (eff_ver if eff_ver in matched_tags else matched_tags[0]), arch_key, "release_tag"
         return None
     if rmeta["close_reason"] == "abandoned" or rmeta["reviewed_sha"] != rec["reviewed_sha"]:
         return None
@@ -150,9 +143,7 @@ def _match_archived_entry(
         return ("", arch_key, "pr_handoff") if cur_head in (rmeta["reviewed_sha"], rmeta["retro_head_sha"]) else None
     tag_sha = resolve_commit_sha(cwd, f"refs/tags/{rmeta['tag']}")
     anc_ok = tag_sha == rmeta["tag_sha"] and is_ancestor(cwd, rec["reviewed_sha"], tag_sha)
-    if anc_ok and cur_head in (tag_sha, rmeta["retro_head_sha"]):
-        return rmeta["tag"], arch_key, "release_tag"
-    return None
+    return (rmeta["tag"], arch_key, "release_tag") if (anc_ok and cur_head in (tag_sha, rmeta["retro_head_sha"])) else None
 
 
 def _find_archived_scope(roots: dict, archive_root: pathlib.Path, eff_ver: str, cur_head: str) -> tuple[str, str, str]:
@@ -169,32 +160,49 @@ def _find_archived_scope(roots: dict, archive_root: pathlib.Path, eff_ver: str, 
     return "", "", ""
 
 
-def _recommend_next(
-    initialized: bool, corrupt: list[str], records: list[dict], counts: dict,
-    roots: dict, scope_key: str, cur_head: str, clean: bool, ho_meta: dict, eff_ver: str, pending: list[dict],
-) -> tuple[str, str, bool, str, str, str, str]:
+def _route(nxt: str, reason: str, **extra) -> dict:
+    base = {
+        "recommended_next": nxt, "recommended_reason": reason, "pass_stale": False,
+        "released_tag": "", "archived_scope": "", "shipped_scope": "", "ship_kind": "",
+        "handoff_stale": False, "stale_archived_scope": "",
+    }
+    base.update(extra)
+    return base
+
+
+def _recommend_empty_records(roots: dict, archive_root: pathlib.Path, ho_meta: dict, eff_ver: str, cur_head: str) -> dict:
+    a_tag, a_scope, a_kind = _find_archived_scope(roots, archive_root, eff_ver, cur_head)
+    if a_scope:
+        return _route("/loop-plan", f"version {eff_ver} archived ({a_scope}, {a_kind}); start next version", released_tag=a_tag, archived_scope=a_scope, ship_kind=a_kind)
+    s_scope, s_kind, s_leg = find_stale_archived_handoff(roots["cwd"], archive_root, ho_meta, eff_ver, cur_head)
+    if s_scope:
+        tag_note = ", legacy archive" if s_leg else ""
+        return _route("/loop-plan", f"handoff still references archived scope {s_scope} ({s_kind}{tag_note}); start next version", handoff_stale=True, stale_archived_scope=s_scope)
+    nxt, reason, stale = _recommend_for_no_records(roots, ho_meta)
+    return _route(nxt, reason, pass_stale=stale)
+
+
+def _recommend_next(initialized: bool, corrupt: list[str], records: list[dict], counts: dict, roots: dict, scope_key: str, cur_head: str, clean: bool, ho_meta: dict, eff_ver: str, pending: list[dict]) -> dict:
     if not initialized:
-        return "/loop-init", "missing .loop/config.json or AGENTS.md marker", False, "", "", "", ""
+        return _route("/loop-init", "missing .loop/config.json or AGENTS.md marker")
     if corrupt:
-        return "fix_corrupt_records", corrupt[0], False, "", "", "", ""
+        return _route("fix_corrupt_records", corrupt[0])
     reviews_root, archive_root = roots["state"] / ".loop" / "reviews", roots["state"] / ".loop" / "archive"
     rel_tag, ship_scope, ship_kind = _find_shipped_scope(roots, reviews_root, scope_key, records, pending, eff_ver, cur_head)
     if ship_scope:
-        return "/loop-retro", f"shipped scope {ship_scope} ({ship_kind}) awaiting /loop-retro", False, rel_tag, "", ship_scope, ship_kind
+        return _route("/loop-retro", f"shipped scope {ship_scope} ({ship_kind}) awaiting /loop-retro", released_tag=rel_tag, shipped_scope=ship_scope, ship_kind=ship_kind)
     if not records:
-        a_tag, a_scope, a_kind = _find_archived_scope(roots, archive_root, eff_ver, cur_head)
-        if a_scope:
-            return "/loop-plan", f"version {eff_ver} archived ({a_scope}, {a_kind}); start next version", False, a_tag, a_scope, "", a_kind
-        nxt, reason, stale = _recommend_for_no_records(roots, ho_meta)
-        return nxt, reason, stale, "", "", "", ""
+        return _recommend_empty_records(roots, archive_root, ho_meta, eff_ver, cur_head)
     latest = records[-1]
     if latest["verdict"] == "reject":
-        return (*_recommend_for_reject(latest, counts, cur_head, clean), "", "", "", "")
+        nxt, reason, stale = _recommend_for_reject(latest, counts, cur_head, clean)
+        return _route(nxt, reason, pass_stale=stale)
     if latest["verdict"] == "pending":
-        return (*_recommend_for_pending(roots, latest, counts, cur_head, clean), "", "", "", "")
+        nxt, reason, stale = _recommend_for_pending(roots, latest, counts, cur_head, clean)
+        return _route(nxt, reason, pass_stale=stale)
     if _pass_is_fresh(roots, latest, cur_head):
-        return "/loop-ship", f"latest round r{latest['round']:02d} passed; ready for /loop-ship", False, "", "", "", ""
-    return "/loop-review", "code or docs changed since latest pass record", True, "", "", "", ""
+        return _route("/loop-ship", f"latest round r{latest['round']:02d} passed; ready for /loop-ship")
+    return _route("/loop-review", "code or docs changed since latest pass record", pass_stale=True)
 
 
 def _is_initialized(roots: dict) -> bool:
@@ -235,27 +243,22 @@ def _status_for_git_repo(roots: dict, state_root: str, docs_root: str, version: 
     records, corrupt = list_scope_records(reviews_root / scope_key) if scope_key else ([], [])
     corrupt += scan_corrupt_meta(reviews_root, archive_root)
     counts, pending = count_rejects(records), _pending_archive_scopes(reviews_root, scope_key)
-    nxt, reason, pass_stale, rel_tag, arch_scope, ship_scope, ship_kind = _recommend_next(
-        _is_initialized(roots), corrupt, records, counts, roots, scope_key, cur_head, bool(clean), ho_meta, eff_ver, pending,
-    )
-    nxt, reason, pf_checked, pf_passed, pf_violations = _apply_preflight_gate(roots, state_root, docs_root, version, branch, nxt, reason)
+    route = _recommend_next(_is_initialized(roots), corrupt, records, counts, roots, scope_key, cur_head, bool(clean), ho_meta, eff_ver, pending)
+    nxt, reason, pf_checked, pf_passed, pf_violations = _apply_preflight_gate(roots, state_root, docs_root, version, branch, route["recommended_next"], route["recommended_reason"])
+    route["recommended_next"], route["recommended_reason"] = nxt, reason
     latest = records[-1] if records else None
     payload = {
         "status": "FAILED" if corrupt else "PASSED", "is_git": True, "git_root": str(roots["cwd_git"]), "mode": roots["mode"],
         "initialized": _is_initialized(roots), "head_sha": cur_head, "current_branch": cwd_br, "worktree_clean": bool(clean),
         "version": eff_ver, "branch": eff_br, "scope_key": scope_key, "scope_dir": str(reviews_root / scope_key) if scope_key else "",
         "active_records": records, "latest_record": latest, "latest_verdict": latest["verdict"] if latest else "none",
-        "latest_reviewed_sha": latest["reviewed_sha"] if latest else "", "pass_stale": pass_stale,
-        "released_tag": rel_tag, "archived_scope": arch_scope, "shipped_scope": ship_scope, "ship_kind": ship_kind,
-        "preflight_checked": pf_checked, "preflight_passed": pf_passed, "preflight_violations": pf_violations,
-        "corrupt_records": corrupt, "pending_archive_scopes": pending, "recommended_next": nxt, "recommended_reason": reason, **counts,
+        "latest_reviewed_sha": latest["reviewed_sha"] if latest else "", "preflight_checked": pf_checked, "preflight_passed": pf_passed,
+        "preflight_violations": pf_violations, "corrupt_records": corrupt, "pending_archive_scopes": pending, **route, **counts,
     }
     return (1 if corrupt else 0), payload
 
 
-def run_review_status(
-    cwd: pathlib.Path, state_root: str = "", docs_root: str = "", mode: str = "", version: str = "", branch: str = "",
-) -> tuple[int, dict]:
+def run_review_status(cwd: pathlib.Path, state_root: str = "", docs_root: str = "", mode: str = "", version: str = "", branch: str = "") -> tuple[int, dict]:
     eff_cwd = cwd.expanduser().resolve()
     if not eff_cwd.is_dir():
         return 2, {"status": "FAILED", "error": f"target directory missing: {eff_cwd}"}
@@ -263,8 +266,8 @@ def run_review_status(
     if root_errs or roots is None:
         return 0, {
             "status": "PASSED", "is_git": False, "initialized": False, "released_tag": "", "archived_scope": "",
-            "shipped_scope": "", "ship_kind": "", "preflight_checked": False, "preflight_passed": False,
-            "preflight_violations": [], "recommended_next": "/loop-init", "recommended_reason": root_errs[0],
-            "pending_archive_scopes": [], "active_records": [],
+            "shipped_scope": "", "ship_kind": "", "handoff_stale": False, "stale_archived_scope": "",
+            "preflight_checked": False, "preflight_passed": False, "preflight_violations": [],
+            "recommended_next": "/loop-init", "recommended_reason": root_errs[0], "pending_archive_scopes": [], "active_records": [],
         }
     return _status_for_git_repo(roots, state_root, docs_root, version, branch)

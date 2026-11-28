@@ -8,11 +8,30 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import sys
 import tempfile
 import time
 
 from devloop_git import is_ignored, is_tracked, repo_prefix, resolve_git_root
+
+MAX_SAMPLING_NOTE_LEN = 500
+
+
+def normalize_sampling_note(raw: str) -> tuple[str, str]:
+    cleaned = re.sub(r"\s+", " ", (raw or "").strip())
+    if not cleaned:
+        return "", ""
+    if len(cleaned) > MAX_SAMPLING_NOTE_LEN:
+        return "", f"[SAMPLING_NOTE_TOO_LONG] --sampling-note exceeds {MAX_SAMPLING_NOTE_LEN} characters"
+    return cleaned, ""
+
+
+def optional_note_ok(data: dict) -> bool:
+    if "sampling_note" not in data:
+        return True
+    val = data.get("sampling_note")
+    return isinstance(val, str) and bool(val.strip()) and len(val) <= MAX_SAMPLING_NOTE_LEN
 
 
 def decode_text_bytes(raw: bytes) -> str:

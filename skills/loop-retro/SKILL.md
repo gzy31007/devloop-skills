@@ -16,7 +16,7 @@ description: Matt 式 Agent 工作环境复盘与归档收尾：读取指定作�
 | 审查与交接记录 | 显式读取指定 `.loop/reviews/<scope-key>/`（或明确指定要复盘的归档作用域）与 `.loop/handoff.md` | 打回根因（`method`/`env`）、第 6 节 P2/P3、漏接项与 `.ship.json` 绑定 |
 | 提交历史 | `git log --oneline -n 20` 及本轮基线至当前范围提交 | 返工震荡热点、跨文件联动漏改、重复修补 |
 | 会话摩擦记录 | 当前或指定会话中的报错、工具超时、重跑与卡点 | 缺寻路入口、隐性前置条件、环境噪音与无效回环 |
-| 发版抽检意见 | `/loop-ship` 人工抽检反馈、PR 评审意见或人工介入记录 | 标准预期差、文档表达盲区与可回滚风险 |
+| 发版抽检意见 | `.loop/reviews/<scope-key>.ship.json` 中的 `sampling_note`（若有）、`/loop-ship` 人工抽检反馈、PR 评审意见或人工介入记录 | 标准预期差、文档表达盲区与可回滚风险 |
 
 按上述证据按需查阅仓库 lint/hook/CI 配置、`AGENTS.md`、可选 `CODING_STANDARDS.md`（客串模式 `.loop/CODING_STANDARDS.md`）、`DECISIONS.md` 与 `.loop/config.json`。
 
@@ -61,8 +61,8 @@ python <loop-review-dir>/scripts/devloop_ops.py review-archive --cwd . --tag vX.
 # 2. 用户明确中止未发版作用域
 python <loop-review-dir>/scripts/devloop_ops.py review-archive --cwd . --version vX.Y --branch <branch> --close-reason abandoned --json
 
-# 3. 终态核验：端口空闲、路由更新、工作树干净
-python <loop-review-dir>/scripts/reap_and_run.py --status --json
+# 3. 终态核验：端口空闲（缺省读取 .loop/config.json ports，跨 worktree 补 --state-root）、路由更新、工作树干净
+python <loop-review-dir>/scripts/reap_and_run.py --status --cwd . --json
 python <loop-review-dir>/scripts/devloop_ops.py review-status --cwd . --json
 git status --porcelain
 ```

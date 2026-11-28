@@ -11,14 +11,8 @@ from datetime import datetime, timezone
 from devloop_git import current_branch, head_sha, is_ancestor, resolve_commit_sha, sha256_file
 from devloop_preflight import resolve_review_roots
 from devloop_review_io import acquire_review_lock, atomic_write_json, verify_review_paths_ignored
-from devloop_review_store import (
-    list_active_scope_keys, list_scope_records, make_scope_key,
-    normalize_version, parse_handoff_meta, version_matches_tag,
-)
-from devloop_ship import (
-    check_same_repo_and_clean, meta_binding_equal, read_retro_meta,
-    read_ship_receipt, retro_meta_path, ship_receipt_path,
-)
+from devloop_review_store import list_active_scope_keys, list_scope_records, make_scope_key, normalize_version, parse_handoff_meta, version_matches_tag
+from devloop_ship import check_same_repo_and_clean, meta_binding_equal, read_retro_meta, read_ship_receipt, retro_meta_path, ship_receipt_path
 
 
 def _resolve_archive_version(tag: str, version: str, ho_meta: dict) -> tuple[str, str]:
@@ -86,24 +80,30 @@ def _check_retro_head(cwd: pathlib.Path, cur_head: str, anchor_sha: str, retro_h
     return ""
 
 
-def _make_retro_meta(scope_key: str, latest: dict, cur_head: str, now: str, reason: str, kind: str, tag: str = "", tag_sha: str = "") -> dict:
-    return {
+def _make_retro_meta(
+    scope_key: str, latest: dict, cur_head: str, now: str, reason: str, kind: str,
+    tag: str = "", tag_sha: str = "", sampling_note: str = "",
+) -> dict:
+    meta = {
         "scope_key": scope_key, "version": latest["version"], "branch": latest["branch"],
         "reviewed_sha": latest["reviewed_sha"], "retro_head_sha": cur_head, "archived_at": now,
         "close_reason": reason, "ship_kind": kind, "tag": tag, "tag_sha": tag_sha,
     }
+    if sampling_note:
+        meta["sampling_note"] = sampling_note
+    return meta
 
 
-def _authorize_pr_handoff(cwd: pathlib.Path, scope_key: str, latest: dict, cur_head: str, tag: str, retro_head: str, now: str) -> tuple[dict | None, list[str]]:
+def _authorize_pr_handoff(cwd: pathlib.Path, scope_key: str, latest: dict, cur_head: str, tag: str, retro_head: str, now: str, sampling_note: str = "") -> tuple[dict | None, list[str]]:
     if tag.strip():
         return None, ["[ARCHIVE_META_CONFLICT] --tag forbidden for pr_handoff archive"]
     if not is_ancestor(cwd, latest["reviewed_sha"], cur_head):
         return None, [f"[NOT_ANCESTOR] reviewed_sha {latest['reviewed_sha']} absent from HEAD"]
     rh_err = _check_retro_head(cwd, cur_head, latest["reviewed_sha"], retro_head)
-    return (None, [rh_err]) if rh_err else (_make_retro_meta(scope_key, latest, cur_head, now, "shipped", "pr_handoff"), [])
+    return (None, [rh_err]) if rh_err else (_make_retro_meta(scope_key, latest, cur_head, now, "shipped", "pr_handoff", sampling_note=sampling_note), [])
 
 
-def _authorize_release_tag(cwd: pathlib.Path, scope_key: str, latest: dict, ship: dict, cur_head: str, tag: str, retro_head: str, now: str) -> tuple[dict | None, list[str]]:
+def _authorize_release_tag(cwd: pathlib.Path, scope_key: str, latest: dict, ship: dict, cur_head: str, tag: str, retro_head: str, now: str, sampling_note: str = "") -> tuple[dict | None, list[str]]:
     if tag.strip() and tag.strip() != ship["tag"]:
         return None, [f"[ARCHIVE_META_CONFLICT] --tag {tag} conflicts with ship receipt {ship['tag']}"]
     tag_sha = resolve_commit_sha(cwd, f"refs/tags/{ship['tag']}")
@@ -112,7 +112,7 @@ def _authorize_release_tag(cwd: pathlib.Path, scope_key: str, latest: dict, ship
     if not is_ancestor(cwd, latest["reviewed_sha"], tag_sha) or not is_ancestor(cwd, tag_sha, cur_head):
         return None, ["[NOT_ANCESTOR] shipped tag ancestry broken"]
     rh_err = _check_retro_head(cwd, cur_head, tag_sha, retro_head)
-    return (None, [rh_err]) if rh_err else (_make_retro_meta(scope_key, latest, cur_head, now, "shipped", "release_tag", ship["tag"], tag_sha), [])
+    return (None, [rh_err]) if rh_err else (_make_retro_meta(scope_key, latest, cur_head, now, "shipped", "release_tag", ship["tag"], tag_sha, sampling_note), [])
 
 
 def _authorize_with_ship(cwd: pathlib.Path, reviews_root: pathlib.Path, scope_key: str, latest: dict, cur_head: str, tag: str, retro_head: str, now: str) -> tuple[dict | None, list[str]]:
@@ -123,9 +123,10 @@ def _authorize_with_ship(cwd: pathlib.Path, reviews_root: pathlib.Path, scope_ke
         return None, [f"[REVIEW_NOT_PASSED] latest record {latest['filename']} has verdict={latest['verdict']}"]
     if (latest["version"], latest["branch"], latest["reviewed_sha"]) != (ship["version"], ship["branch"], ship["reviewed_sha"]):
         return None, ["[ARCHIVE_META_CONFLICT] active pass record differs from .ship.json"]
+    note = ship.get("sampling_note", "")
     if ship["kind"] == "pr_handoff":
-        return _authorize_pr_handoff(cwd, scope_key, latest, cur_head, tag, retro_head, now)
-    return _authorize_release_tag(cwd, scope_key, latest, ship, cur_head, tag, retro_head, now)
+        return _authorize_pr_handoff(cwd, scope_key, latest, cur_head, tag, retro_head, now, note)
+    return _authorize_release_tag(cwd, scope_key, latest, ship, cur_head, tag, retro_head, now, note)
 
 
 def _authorize_abandoned(cwd: pathlib.Path, ship_path: pathlib.Path, scope_key: str, latest: dict, cur_head: str, tag: str, retro_head: str, now: str) -> tuple[dict | None, list[str]]:
@@ -160,6 +161,19 @@ def _authorize_archive(roots: dict, reviews_root: pathlib.Path, scope_key: str, 
     return _authorize_compat_tag(cwd, scope_key, latest, cur_head, tag, retro_head, now)
 
 
+def _write_or_verify_retro_meta(archive_root: pathlib.Path, scope_key: str, expected_meta: dict) -> tuple[dict | None, str]:
+    meta_path = retro_meta_path(archive_root, scope_key)
+    if meta_path.exists() or meta_path.is_symlink():
+        existing, r_err = read_retro_meta(archive_root, scope_key)
+        if r_err or existing is None:
+            return None, r_err or "[ARCHIVE_META_CORRUPT]"
+        if not meta_binding_equal(existing, expected_meta, frozenset({"archived_at"})):
+            return None, f"[ARCHIVE_META_CONFLICT] {meta_path.name} conflicts with pending archive"
+        return existing, ""
+    atomic_write_json(meta_path, expected_meta)
+    return expected_meta, ""
+
+
 def _move_to_empty_dest(
     roots: dict, reviews_root: pathlib.Path, archive_root: pathlib.Path, src: pathlib.Path, dst: pathlib.Path,
     scope_key: str, tag: str, retro_head: str, close_reason: str,
@@ -170,23 +184,31 @@ def _move_to_empty_dest(
     expected_meta, auth_errs = _authorize_archive(roots, reviews_root, scope_key, records[-1], tag, retro_head, close_reason)
     if auth_errs or expected_meta is None:
         return 1, {"status": "FAILED", "violations": auth_errs}
-    meta_path = retro_meta_path(archive_root, scope_key)
-    if meta_path.exists() or meta_path.is_symlink():
-        existing, r_err = read_retro_meta(archive_root, scope_key)
-        if r_err or existing is None:
-            return 1, {"status": "FAILED", "violations": [r_err or "[ARCHIVE_META_CORRUPT]"]}
-        if not meta_binding_equal(existing, expected_meta, frozenset({"archived_at"})):
-            return 1, {"status": "FAILED", "violations": [f"[ARCHIVE_META_CONFLICT] {meta_path.name} conflicts with pending archive"]}
-        expected_meta = existing
-    else:
-        atomic_write_json(meta_path, expected_meta)
+    saved_meta, meta_err = _write_or_verify_retro_meta(archive_root, scope_key, expected_meta)
+    if meta_err or saved_meta is None:
+        return 1, {"status": "FAILED", "violations": [meta_err]}
     dst.parent.mkdir(parents=True, exist_ok=True)
     os.replace(src, dst)
     ship_receipt_path(reviews_root, scope_key).unlink(missing_ok=True)
-    return 0, {"status": "PASSED", "archived": True, "idempotent": False, "scope_key": scope_key, "source": str(src), "destination": str(dst), "records_count": len(records), "retro_meta": expected_meta}
+    return 0, {"status": "PASSED", "archived": True, "idempotent": False, "scope_key": scope_key, "source": str(src), "destination": str(dst), "records_count": len(records), "retro_meta": saved_meta}
 
 
-def _validate_existing_retro(cwd: pathlib.Path, rmeta: dict, latest: dict, tag: str, retro_head: str, close_reason: str) -> str:
+def _check_residual_ship_note(reviews_root: pathlib.Path, scope_key: str, rmeta: dict) -> str:
+    ship_path = ship_receipt_path(reviews_root, scope_key)
+    if not ship_path.exists() and not ship_path.is_symlink():
+        return ""
+    ship, s_err = read_ship_receipt(reviews_root, scope_key)
+    if s_err or ship is None:
+        return s_err or "[SHIP_RECEIPT_CORRUPT] unreadable residual ship receipt"
+    if ship.get("sampling_note", "") != rmeta.get("sampling_note", ""):
+        return "[ARCHIVE_META_CONFLICT] .ship.json sampling_note differs from .retro.json"
+    return ""
+
+
+def _validate_existing_retro(
+    cwd: pathlib.Path, reviews_root: pathlib.Path, scope_key: str,
+    rmeta: dict, latest: dict, tag: str, retro_head: str, close_reason: str,
+) -> str:
     if (rmeta["version"], rmeta["branch"], rmeta["reviewed_sha"]) != (latest["version"], latest["branch"], latest["reviewed_sha"]):
         return "[ARCHIVE_META_CONFLICT] .retro.json disagrees with archived records"
     if tag.strip() and tag.strip() != rmeta["tag"]:
@@ -195,7 +217,7 @@ def _validate_existing_retro(cwd: pathlib.Path, rmeta: dict, latest: dict, tag: 
         return "[ARCHIVE_META_CONFLICT] --close-reason conflicts with existing .retro.json"
     if retro_head.strip() and resolve_commit_sha(cwd, retro_head.strip()) != rmeta["retro_head_sha"]:
         return "[ARCHIVE_META_CONFLICT] --retro-head conflicts with existing .retro.json"
-    return ""
+    return _check_residual_ship_note(reviews_root, scope_key, rmeta)
 
 
 def _reconcile_existing_dest(
@@ -210,7 +232,7 @@ def _reconcile_existing_dest(
     rmeta, r_err = read_retro_meta(archive_root, scope_key)
     if r_err or rmeta is None:
         return 1, {"status": "FAILED", "violations": [r_err or f"[ARCHIVE_META_MISSING] missing {scope_key}.retro.json"]}
-    conflict = _validate_existing_retro(roots["cwd"], rmeta, records[-1], tag, retro_head, close_reason)
+    conflict = _validate_existing_retro(roots["cwd"], reviews_root, scope_key, rmeta, records[-1], tag, retro_head, close_reason)
     if conflict:
         return 1, {"status": "FAILED", "violations": [conflict]}
     if src.is_dir():

@@ -13,12 +13,12 @@ import sys
 GLOB_CHARS = frozenset("*?[")
 KIT_SKILLS = ("agent-docs", "hakimi", "loop-init", "loop-plan", "loop-build", "loop-review", "loop-ship", "loop-retro")
 KIT_SCRIPTS = (
-    "arch_gate.py", "arch_js.py", "reap_and_run.py", "devloop_git.py", "devloop_markers.py",
+    "arch_gate.py", "arch_js.py", "reap_and_run.py", "devloop_ports.py", "devloop_git.py", "devloop_markers.py",
     "devloop_docs.py", "devloop_init.py", "devloop_review_io.py", "devloop_review_store.py",
-    "devloop_preflight.py", "devloop_ship.py", "devloop_status.py", "devloop_reviews.py",
+    "devloop_preflight.py", "devloop_ship.py", "devloop_stale.py", "devloop_status.py", "devloop_reviews.py",
     "devloop_archive.py", "devloop_gate.py", "devloop_ops.py", "verify_scripts.py",
     "verify_ops_cases.py", "verify_preflight_cases.py", "verify_review_cases.py",
-    "verify_gate_cases.py", "verify_ship_retro_cases.py",
+    "verify_gate_cases.py", "verify_ship_retro_cases.py", "verify_v017_cases.py",
 )
 KIT_REFERENCES = (
     "config.example.json", "decisions.template.md", "feature_map.template.md",

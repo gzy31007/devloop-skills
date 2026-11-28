@@ -121,6 +121,7 @@ def _cmd_ship_record(args: argparse.Namespace) -> int:
         mode=args.mode, version=args.version, branch=args.branch,
         reviewed_sha=args.reviewed_sha, tag=args.tag,
         target_branch=args.target_branch, push_status=args.push_status,
+        sampling_note=args.sampling_note,
     )
     _emit(payload, args.json)
     return code
@@ -211,7 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_review_parsers(sub)
 
     p_ship = sub.add_parser("ship-record", help="Write ship receipt (.ship.json) for a passed review scope.")
-    _add_str_args(p_ship, ("--state-root", "--docs-root", "--version", "--branch", "--reviewed-sha", "--tag"))
+    _add_str_args(p_ship, ("--state-root", "--docs-root", "--version", "--branch", "--reviewed-sha", "--tag", "--sampling-note"))
     p_ship.add_argument("--cwd", default=".")
     p_ship.add_argument("--mode", default="", choices=["", "own", "external"])
     p_ship.add_argument("--target-branch", default="main")

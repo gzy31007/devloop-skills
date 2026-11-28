@@ -13,6 +13,7 @@ from verify_ops_cases import check_generated_paths, check_ops_init_and_resolve
 from verify_preflight_cases import check_preflight_and_status
 from verify_review_cases import check_review_handoff_and_archive
 from verify_ship_retro_cases import check_ship_and_retro_flows
+from verify_v017_cases import check_v017_upgrades
 
 SKILLS = SCRIPTS.parents[1]
 ARCH_GATE = SCRIPTS / "arch_gate.py"
@@ -244,8 +245,7 @@ def check_self_arch_gate():
 
 def main():
     for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
+        hasattr(stream, "reconfigure") and stream.reconfigure(encoding="utf-8", errors="replace")
     work = pathlib.Path(tempfile.mkdtemp(prefix="devloop-verify-"))
     checks = [
         ("python_gate", lambda: check_python_gate(work)), ("ts_js_gate", lambda: check_ts_gate(work)),
@@ -254,7 +254,8 @@ def main():
         ("reaper", lambda: check_reaper(work)), ("ops_init_resolve", lambda: check_ops_init_and_resolve(work)),
         ("ops_preflight_status", lambda: check_preflight_and_status(work)), ("ops_review_handoff", lambda: check_review_handoff_and_archive(work)),
         ("ops_review_release", lambda: check_ops_review_and_release_gate(work)), ("ops_ship_retro", lambda: check_ship_and_retro_flows(work)),
-        ("publish_devloop", lambda: check_publish_devloop_unit(work)), ("skills", check_skills), ("self_arch_gate", check_self_arch_gate),
+        ("v017_upgrades", lambda: check_v017_upgrades(work)), ("publish_devloop", lambda: check_publish_devloop_unit(work)),
+        ("skills", check_skills), ("self_arch_gate", check_self_arch_gate),
     ]
     failures = 0
     print(f"verify_scripts.py | python {sys.version.split()[0]} | scripts {SCRIPTS}")
